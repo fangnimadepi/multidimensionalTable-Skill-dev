@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project-report" / "scripts"))
 from local_reports import checked_reports, exclusive_work, source_path, worker_failure
@@ -64,6 +65,31 @@ class LocalReportsTests(unittest.TestCase):
             failure = worker_failure(root, subprocess.CalledProcessError(1, "worker"))
             self.assertTrue(failure.details()["retryable"])
             self.assertEqual(failure.error_code, "model_connection_failed")
+
+    def test_worker_preserves_the_actual_validation_stage_and_feedback_file(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project-report/runtime/scripts"))
+        import report_worker
+        from project_report_contract import ReportValidationError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attempt = root / "attempt-one"
+            attempt.mkdir()
+            feedback = root / "review/failed-grouped/project-final.json"
+            feedback.parent.mkdir(parents=True)
+            feedback.write_text('{"feedback":{"conclusion":["unsupported_whole_project_conclusion"]}}')
+            manifest = attempt / "manifest.json"
+            manifest.write_text("{}")
+            error = ReportValidationError("Grouped review final composition did not pass checks",
+                                          stage="review/final", feedback_file=feedback)
+            with (patch.object(sys, "argv", ["report_worker.py", str(manifest)]),
+                  patch.object(report_worker, "run", side_effect=error), self.assertRaises(SystemExit)):
+                report_worker.main()
+            failure = worker_failure(attempt, subprocess.CalledProcessError(1, "worker"))
+            self.assertEqual(failure.details()["validation_stage"], "review/final")
+            self.assertEqual(failure.details()["validation_file"], str(feedback))
+            self.assertIn("履约报告最终", str(failure))
+            self.assertFalse(failure.retryable)
 
 
 if __name__ == "__main__":

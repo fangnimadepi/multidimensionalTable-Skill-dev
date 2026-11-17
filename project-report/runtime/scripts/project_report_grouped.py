@@ -104,6 +104,7 @@ INITIAL_AUDIT = INITIAL_AUDIT_HEAD + INITIAL_AUDIT_TAIL
 FINAL_WRITE = prompts.SYNTHESIS_PROMPT + "\n" + prompts.CONFIRMATION_PROMPT + """
 本轮一次完成综合意见和集中确认话术。conclusion_context中保留全部已审定问题供理解，但综合意见只点出key_pending_issue_ids中的一个主要待确认主题，其他问题完整留在questions，不在综合意见展开清单。
 综合意见保持自然、有观点：先概括实际进展，再解释其与计划的对应程度及一个关键边界；不用机械数字堆砌，也不能把未确定事项当作全部满足。
+测试分值、准确率百分比和其他统计指标须按已审定口径分别叙述。口径仍待确认时，不能因为数字较大就写成超过计划要求，再在另一段保留口径疑问。
 confirmation_context.approved_questions每个entry_id恰好一次。综合意见的sources与问题原文分别属于对应上下文，不能混用编号或引入新要求。
 只输出JSON {"conclusion":{"paragraphs":[{"text":"自然的一至两段综合意见","has_assessment":true,"item_ids":["C001"],"issue_ids":[],"source_ids":["依据01","依据02"]}]},"questions":{"items":[{"entry_id":"Q01","text":"想和您确认一下，……目前进展如何？"}]}}。
 """
@@ -115,6 +116,7 @@ FINAL_AUDIT = (
     + prompts.EVIDENCE_CONTEXT_AUDIT_PROMPT
     + """
 本轮合并最终文字、问题与原文用途的独立审核，不能自行改写、替换或覆盖任何负向结果。extra_modules非空时，还须检查综合意见、已认定成果状态和所有确认话术；为空时仅检查本批证据。
+若两段一处将分值与准确率百分比直接比较并宣称超过要求，另一处又说测评口径待确认，应指出这一实质矛盾；不能把数字大小当作指标口径等价。
 保留上述各项语义边界，但按紧凑协议输出，不抄写合格原文。JSON:
 {"evidence":[{"id":"依据01","flags":[true,true,true,true],"ok_uses":["U001"],"issues":[]}],
 "conclusion":[["CS01",true]],"module":[true,true,true,true],"states":[["C001",true,true]],
@@ -399,11 +401,10 @@ def initial(
         if set(approved) == {"reader", "basis"}:
             break
     if set(approved) != {"reader", "basis"}:
-        pipeline.write_json(
-            pipeline.RUN / "failed-grouped" / f"{pair.project_id}-initial.json",
-            feedback,
-        )
-        raise ValueError("Grouped review initial composition did not pass checks")
+        feedback_file = pipeline.RUN / "failed-grouped" / f"{pair.project_id}-initial.json"
+        pipeline.write_json(feedback_file, feedback)
+        raise c.ReportValidationError("Grouped review initial composition did not pass checks",
+                                      stage="review/initial", feedback_file=feedback_file)
     report = c.assemble_report(
         source,
         records,
@@ -696,11 +697,10 @@ def final(
             "content_sha256": content_digest(report),
         }
         return
-    pipeline.write_json(
-        pipeline.RUN / "failed-grouped" / f"{report['project_id']}-final.json",
-        {"feedback": feedback, "draft": raw},
-    )
-    raise ValueError("Grouped review final composition did not pass checks")
+    feedback_file = pipeline.RUN / "failed-grouped" / f"{report['project_id']}-final.json"
+    pipeline.write_json(feedback_file, {"feedback": feedback, "draft": raw})
+    raise c.ReportValidationError("Grouped review final composition did not pass checks",
+                                  stage="review/final", feedback_file=feedback_file)
 
 
 def bind_assessment_plan_sources(draft, context):

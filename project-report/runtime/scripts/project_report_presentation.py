@@ -118,6 +118,23 @@ def without_queried_completion(text):
     return re.sub(r'(是(?:已(?:经)?|均已)?)' + qualifier + r'(?=(?:完成|达标)[，,]?\s*还是)', r'\1', text)
 
 
+def asserted_completion_text(text):
+    """Exclude negated or explicitly disputed completion wording from assertions."""
+    clause = r'[^，,。；;：:\n]'
+    whole = r'(?:全部|所有|各项)' + clause + r'{0,16}?(?:完成|达标)'
+    verdict = (r'(?:尚不能|暂不能|仍不能|不能|无法|尚无法|难以|尚未|未能)'
+               r'(?:据此|就此|直接|简单|单独|充分)?'
+               r'(?:认定|确认|判断|推断|断言|视为|认为|证明|说明|保证)')
+    text = re.sub(verdict + clause + r'{0,60}?' + whole, '', text)
+    text = re.sub(r'(?:尚未|仍未|还未|并未|未能|没有|并非|未)' + whole, '', text)
+    text = re.sub(r'(?:全部|所有|各项)' + clause + r'{0,16}?'
+                  r'(?:尚未|仍未|还未|并未|未能|没有|未)(?:全部|完全|均)?(?:完成|达标)', '', text)
+    quoted = r'[“「『"]' + r'[^”」』"\n]{0,60}?' + whole + r'[^”」』"\n]{0,20}?[”」』"]'
+    disputed = (r'与' + quoted + clause + r'{0,20}?(?:存在|仍有|尚有)' + clause
+                + r'{0,20}?(?:核实|确认|疑问|矛盾|不一致|边界)')
+    return re.sub(disputed, '', text)
+
+
 def add_reader_source_bindings(statement, patch, records):
     """Source-only patch: never rewrite prose/scope or discard old evidence."""
     if not isinstance(patch, dict) or set(patch) != {'additional_refs'}:
@@ -331,6 +348,7 @@ def validate_presentation(raw, audit, source, records, items, rows, required_sec
                 if not number_support(str(text), ' '.join(supporting)):
                     errors.append('unsupported_display_number')
                 claims = without_queried_completion(str(text)) if field == 'confirmation_notes' else str(text)
+                claims = asserted_completion_text(claims)
                 if re.search(r'通过验收|通过评审|(?:项目|履约|审查|综合|总体)(?:的)?(?:评分|得分)|整体风险(?:较高|较低|可控)|全部(?:任务|目标|要求)?(?:均已)?完成|所有.*(?:均已完成|均已满足)', claims):
                     errors.append('unsupported_global_rating')
                 if re.search(r'校验降级|未拆解|字符覆盖|模型输出|模型引用|核对条目|技术复核|系统待复核', str(text)):

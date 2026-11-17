@@ -262,7 +262,7 @@ def validate(draft, audit, context):
         # shared technical names and a brief key question are legitimate.
         if re.search(r'(.{8,32}?)\1', text):
             errors.append('repeated_phrase_in_conclusion')
-        claims = p.without_queried_completion(text)
+        claims = p.asserted_completion_text(p.without_queried_completion(text))
         if a.forbidden_claim(claims) or re.search(
                 r'本期[^，,。；;：:\n]{0,8}[一二三四五六七八九十\d]+项[^，,。；;：:\n]{0,14}(?:均已完成|均对应|全部完成)'
                 r'|(?:所有|全部|各项)(?:本期|中期|阶段|计划|考核|项目)?(?:任务|指标|目标|工作|要求)'

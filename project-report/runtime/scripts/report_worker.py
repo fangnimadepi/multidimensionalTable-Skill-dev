@@ -305,6 +305,8 @@ def main():
         detail = failure_details(args.manifest.parent, error)
         detail.pop('worker', None)
         detail.update(exception_details(error))
+        if isinstance(error, contract.ReportValidationError):
+            detail.update(validation_stage=error.validation_stage, validation_file=str(error.validation_file))
         write_failure(args.manifest.parent / 'worker-failure.json', detail)
         progress = args.manifest.parent / 'progress.json'
         if progress.exists():

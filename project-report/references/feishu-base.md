@@ -18,7 +18,7 @@ $Entry = Join-Path $Skill 'scripts\feishu_batch.py'
 
 直接调用 `feishu_batch.py` 时，子命令为 `deliver`、`inspect` 或 `run`。更新后可用 `& $Py $Entry --version` 确认已加载目录的版本。处理状态以退出码和 JSON 为准。`needs_selection` 需要补信息，`incomplete` 查看逐项目结果和剩余范围。批次结果含实际 Skill 版本、清点时长和各项目的下载、生成及归档时长。
 
-- **表格与范围**。按链接或准确表名定位。名称查不到、结果不唯一或搜索缺权限时，直接请用户提供链接。多个子表用 `--table` 指定。使用视图链接时按该视图处理，用户明确要求全表时加 `--whole-table`。`--all` 表示当前范围的全部项目，`--count N` 仅在非空项目恰好为 N 时成立。用户指定前 N 项时，需先确定视图和排序，再用 `--first N`。指定项目时重复使用 `--project '确切项目名'`。
+- **表格与范围**。按链接或准确表名定位。名称查不到、结果不唯一或搜索缺权限时，直接请用户提供链接。多个子表用 `--table` 指定。使用视图链接时按该视图处理，用户明确要求全表时加 `--whole-table`。`--all` 表示当前范围的全部项目，`--count N` 仅在非空项目恰好为 N 时成立。用户指定前 N 项时，需先确定视图和排序，再用 `--first N`。指定项目时重复使用 `--project '项目名'`。用户用 test02、test03 指代「test02:项目名」等记录时，可直接传简称，脚本只接受唯一的冒号前缀匹配，歧义时返回候选供选择。
 - **材料**。脚本识别明确的项目名、任务书和阶段总结列。唯一文本列叫「文本」时可用作项目名，有多个候选时通过 `--name-column` 指定。材料或归档列识别困难时使用对应的 `--taskbook-column`、`--report-column` 或 `--output-column`。确认整张表没有阶段总结时可用 `--no-report`。选定版本后，可用 `--material RECORD ROLE ATTACHMENT` 指定清点结果中对应的记录标识、`taskbook` 或 `report` 角色和附件标识。将技术标识留给宿主，用户只需选择文件名。可先处理其他已明确的项目。
 - **单种报告和预览**。使用相同的范围参数，执行 `inspect --archive --types review`、`inspect --archive --types achievement` 或 `inspect --archive --types forecast`。仅本地出稿用 `inspect --local-only`，可加 `--types`。`inspect` 需要明确交付方式，旧的省略交付方式写法会报参数错误。清点成功后用 `run --batch '清点返回的批次绝对路径'` 执行。
 - **归档位置**。默认追加到原项目记录的归档列。缺少归档列时集中确认新建或指定已有附件列，之后重新执行标准命令或原清点命令。列建好之前保留归档待办。明确更新旧报告时传 `--replace`，新文件摘要通过回读后才移除同类型、归属有回执的旧报告。认不出来源的旧附件仍保留。

@@ -17,15 +17,20 @@ from read_docx import extract, file_hash, inside
 
 
 class WorkerFailure(ValueError):
-    def __init__(self, message, directory, *, error_code="report_worker_failed", retryable=False):
+    def __init__(self, message, directory, *, error_code="report_worker_failed", retryable=False,
+                 validation_stage=None, validation_file=None):
         super().__init__(message)
         self.directory = directory
         self.error_code = error_code
         self.retryable = retryable
+        self.validation_stage = validation_stage
+        self.validation_file = validation_file
 
     def details(self):
         return {"diagnostics": str(self.directory), "error_code": self.error_code,
                 "retryable": self.retryable,
+                **({"validation_stage": self.validation_stage} if self.validation_stage else {}),
+                **({"validation_file": str(self.validation_file)} if self.validation_file else {}),
                 "next_action": ("临时连接或等待失败，可用原批次重试一次。" if self.retryable else
                                 "本项目已停止。将错误码和诊断目录交给维护人员，修复后继续。")}
 
@@ -36,12 +41,22 @@ def worker_failure(directory, error):
                              error_code="report_timeout", retryable=True)
     try:
         detail = load_json(directory / "worker-failure.json")
-        error_type, message = detail.get("type", detail.get("error_type", "")), detail.get("message", "")
+        error_type, message = detail.get("type", detail.get("error_type", "")), str(detail.get("message") or "")
     except (OSError, ValueError, AttributeError):
         error_type, message = "", ""
-    if error_type == "ValueError":
-        return WorkerFailure("报告正文或来源检查未通过，已停止本项目并保留诊断记录。", directory,
-                             error_code="report_validation_failed")
+    if error_type in {"ValueError", "ReportValidationError"}:
+        stage_messages = {
+            "review/initial": "履约报告初稿未通过正文或成果认定口径检查。",
+            "review/final": "履约报告最终综合意见、确认话术或依据用途检查未通过。",
+            "achievement/facts": "成果报告部分表述未通过事实或来源检查。",
+        }
+        stage = detail.get("validation_stage")
+        feedback_file = detail.get("validation_file")
+        if not isinstance(feedback_file, str) or not Path(feedback_file).resolve().is_relative_to(directory.parent.resolve()):
+            feedback_file = None
+        return WorkerFailure(stage_messages.get(stage, "报告正文或来源检查未通过，已停止本项目并保留诊断记录。"),
+                             directory, error_code="report_validation_failed",
+                             validation_stage=stage if stage in stage_messages else None, validation_file=feedback_file)
     retryable = error_type in {"TimeoutError", "ConnectionError", "URLError"} or (
         error_type == "RuntimeError" and any(value in message for value in (
             "TimeoutError", "URLError", "RemoteDisconnected", "ConnectionError", "HTTP 429", "HTTP 500",

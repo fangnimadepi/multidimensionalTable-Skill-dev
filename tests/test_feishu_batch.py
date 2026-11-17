@@ -198,6 +198,17 @@ class FeishuBatchTests(unittest.TestCase):
                 batch.inspect(self.connector, self.root, arguments)
         self.assertEqual(self.connector.events, [])
 
+    def test_project_short_name_requires_a_unique_delimited_match(self):
+        rows = [{"record_id": "recTwo", "project_name": "test02:跨顶层设计dtco"},
+                {"record_id": "recThree", "project_name": "test03：通专模型数智大脑"}]
+        args = inspect_args(project=["test02", "test03"])
+        self.assertEqual(batch.choose_projects(rows, args, None), rows)
+        rows.append({"record_id": "recOther", "project_name": "test03:另一项目"})
+        with self.assertRaises(NeedsSelection):
+            batch.choose_projects(rows, args, None)
+        with self.assertRaises(NeedsSelection):
+            batch.choose_projects(rows, inspect_args(project=["test0"]), None)
+
     def test_missing_archive_column_does_not_plan_a_local_only_delivery(self):
         with patch.object(self.connector, "fields", return_value=FIELDS[:3]):
             with self.assertRaisesRegex(NeedsSelection, "未找到明确的归档附件列"):

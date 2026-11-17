@@ -187,6 +187,7 @@ def check_audit(value, checks, errors):
 
 
 def forbidden_claim(text):
+    text = p.asserted_completion_text(text)
     return bool(re.search(r'通过验收|验收通过|认定违约|涉嫌造假|真实性存疑|(?:项目|综合|审查).{0,5}(?:评分|得分)|全部(?:任务|指标)?(?:均已)?(?:完成|达标)', text))
 
 

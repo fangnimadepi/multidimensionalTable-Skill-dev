@@ -414,8 +414,11 @@ def run_project(pair, run, output, config, execute, facts_from=None, review_path
             raise ValueError('Expression audit response incomplete after coverage repair')
         errors = program_errors + audit_errors(draft, audit, bool(paired))
         if not errors: break
-        legacy.write_json(run / 'revision-records' / f'{pid}-{attempt}.json', {'draft': draft, 'errors': errors, 'audit': audit})
-        if attempt: raise ValueError('Expression material-fact check failed after one targeted repair')
+        feedback_file = run / 'revision-records' / f'{pid}-{attempt}.json'
+        legacy.write_json(feedback_file, {'draft': draft, 'errors': errors, 'audit': audit})
+        if attempt:
+            raise contract.ReportValidationError('Expression material-fact check failed after one targeted repair',
+                                                 stage='achievement/facts', feedback_file=feedback_file)
         targets = {e['statement_id'] for e in program_errors}
         all_ids = [s['statement_id'] for s in statements(draft)]
         material_targets = audit_protocol.content_targets(audit, all_ids)

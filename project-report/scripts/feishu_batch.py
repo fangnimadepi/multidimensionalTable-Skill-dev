@@ -104,8 +104,11 @@ def choose_projects(rows, args, record_link):
         matches = []
         for project in args.project:
             found = [row for row in rows if project in (row["record_id"], row["project_name"])]
+            if not found:
+                found = [row for row in rows if re.match(re.escape(project) + r"\s*[:：]", row["project_name"])]
             if len(found) != 1:
-                raise NeedsSelection(f"无法唯一定位项目「{project}」，请确认项目名称。")
+                raise NeedsSelection(f"无法唯一定位项目「{project}」，请确认项目名称。",
+                                     [row["project_name"] for row in found or rows])
             matches.append(found[0])
         rows = matches
     elif args.count is not None and len(rows) != args.count:
@@ -407,7 +410,9 @@ def run(connector, config_file, config, root, args):
                             if (failure.get("error_code") == "report_validation_failed"
                                     and entry.get("generation_context") == context):
                                 raise WorkerFailure(entry["reason"], Path(entry["diagnostics"]),
-                                                    error_code=failure["error_code"])
+                                                    error_code=failure["error_code"],
+                                                    validation_stage=failure.get("validation_stage"),
+                                                    validation_file=failure.get("validation_file"))
                             entry["generation_context"] = context
                             progress(project=entry["project_name"], step="生成并核对报告")
                             build = SimpleNamespace(types=entry["types"], taskbook=materials["taskbook"]["path"],

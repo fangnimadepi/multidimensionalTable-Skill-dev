@@ -20,6 +20,13 @@ DIMENSIONS = ("metric", "object", "unit", "stage", "test_conditions")
 ASSERTIVE = set(STATUSES[:3])
 
 
+class ReportValidationError(ValueError):
+    def __init__(self, message, *, stage, feedback_file):
+        super().__init__(message)
+        self.validation_stage = stage
+        self.validation_file = Path(feedback_file)
+
+
 def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
