@@ -38,23 +38,27 @@ def setup_runtime(config_file, config, use_credentials=True):
     scripts = root / "scripts"
     sys.path.insert(0, str(scripts))
     from llm_runtime import model_config
+    from model_setup import load_credentials, manual_model_options
     from private_model_settings import PROVIDERS, _supported
 
-    provider = runtime.get("provider")
-    model = runtime.get("model")
-    if provider not in PROVIDERS or not _supported(provider, model):
-        raise ValueError("请在鲸研配置中指定受支持的报告模型平台和模型。")
     ocr_engine = runtime.get("ocr_engine")
     if ocr_engine:
         if ocr_engine not in {"vision", "rapidocr"}:
             raise ValueError("OCR 引擎应为 vision 或 rapidocr。")
         os.environ["PROJECT_ASSISTANT_OCR_ENGINE"] = ocr_engine
+
+    manual = manual_model_options(PROVIDERS, use_credentials)
+    if manual is not None:
+        return root, {**model_config(), **manual}
+
+    provider = runtime.get("provider")
+    model = runtime.get("model")
+    if provider not in PROVIDERS or not _supported(provider, model):
+        raise ValueError("请在鲸研配置中指定受支持的报告模型平台和模型。")
     _, endpoint, key_env, _ = PROVIDERS[provider]
     model_options = {**model_config(), "provider": provider, "api_base": endpoint,
                      "api_key_env": key_env, "text_model": model}
     if use_credentials:
-        from model_setup import load_credentials
-
         load_credentials(config_file, runtime, key_env)
     return root, model_options
 
@@ -236,6 +240,7 @@ def main():
     parser.add_argument("--config", required=True, type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor")
+    sub.add_parser("check-model", help="向已配置模型发送一条最小请求")
     read = sub.add_parser("read")
     read.add_argument("--role", required=True, choices=("taskbook", "report"))
     read.add_argument("--input", required=True)
@@ -252,13 +257,21 @@ def main():
         config_file = args.config.resolve(strict=True)
         config = load_json(config_file)
         root, model = setup_runtime(config_file, config)
-        if args.command == "doctor":
-            from pdf_ocr import capabilities
+        if args.command in {"doctor", "check-model"}:
+            from model_setup import LOCAL_MODEL_CONFIG, verify_connection
             from review_common import api_key
 
-            result = {"status": "ready" if api_key(model["api_key_env"]) else "model_key_missing",
-                      "model": model["text_model"], "provider": model["provider"], "ocr": capabilities(),
-                      "engine": str(root), "output_format": "docx"}
+            key = api_key(model["api_key_env"])
+            active_config = LOCAL_MODEL_CONFIG if model.get("manual_endpoint") else config_file
+            result = {"status": "ready" if key else "model_key_missing", "model": model["text_model"],
+                      "provider": model["provider"], "model_config_file": str(active_config)}
+            if args.command == "check-model" and key:
+                verify_connection(model, key)
+                result["connection_verified"] = True
+            if args.command == "doctor":
+                from pdf_ocr import capabilities
+
+                result.update(ocr=capabilities(), engine=str(root), output_format="docx")
         else:
             workspace_root = workspace(config_file, config)
             run_dir = inside(args.run_dir, workspace_root)

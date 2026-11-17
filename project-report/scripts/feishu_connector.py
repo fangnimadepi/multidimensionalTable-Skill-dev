@@ -9,6 +9,7 @@ import subprocess
 from urllib.parse import urlsplit
 
 from read_docx import file_hash, inside
+from model_setup import MANUAL_KEY_ENV
 
 
 class ConnectorError(ValueError):
@@ -59,7 +60,7 @@ class Connector:
 
     def call(self, action, *arguments):
         environment = os.environ.copy()
-        for key in ("DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY", "DASHSCOPE_API_KEY"):
+        for key in ("DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY", "DASHSCOPE_API_KEY", MANUAL_KEY_ENV):
             environment.pop(key, None)
         environment.update(LARKSUITE_CLI_NO_UPDATE_NOTIFIER="1", LARKSUITE_CLI_NO_SKILLS_NOTIFIER="1",
                            LARK_CLI_NO_PROXY_WARN="1")

@@ -15,6 +15,11 @@ from llm_runtime import emit, request_slot, check_cancelled
 from siliconflow_stream import read_chat_stream
 
 
+class NoEndpointRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def request_payload(system, user, config, tokens):
     encoded_user = json.dumps(user, ensure_ascii=False)
     # DeepSeek enforces this JSON-mode precondition, including on audit prompts
@@ -26,11 +31,12 @@ def request_payload(system, user, config, tokens):
         'max_tokens': tokens, 'temperature': 0,
         'stream': config.get('stream', os.environ.get('SILICONFLOW_STREAM_JSON') == '1'),
         'response_format': {'type':'json_object'}}
-    if config.get('provider') == 'deepseek':
+    provider = config.get('provider', 'siliconflow')
+    if provider == 'deepseek':
         value['thinking'] = {'type': 'disabled'}
-    else:
+    elif provider in {'dashscope', 'siliconflow'}:
         value['enable_thinking'] = False
-    if config.get('provider') == 'dashscope' and value['stream']:
+    if provider == 'dashscope' and value['stream']:
         value['stream_options'] = {'include_usage': True}
     return value
 
@@ -44,6 +50,8 @@ def complete_json(system, user, config, tokens, credential):
     attempts = int(config.get('request_attempts', 2))
     json_repairs = int(config.get('request_json_repair_attempts', 1))
     budget = float(config.get('request_total_budget_seconds', min(timeout * attempts, 900)))
+    open_request = (urllib.request.build_opener(NoEndpointRedirect()).open
+                    if config.get('manual_endpoint') else urllib.request.urlopen)
     if not (1 <= timeout <= 900 and 1 <= idle <= 900 and 1 <= budget <= 1800 and 1 <= attempts <= 4 and 0 <= json_repairs <= 1):
         raise ValueError('Invalid model request deadline or retry policy')
     with request_slot(config) as queue_seconds:
@@ -59,7 +67,7 @@ def complete_json(system, user, config, tokens, credential):
                 data=json.dumps(payload, ensure_ascii=False).encode(),
                 headers={'Authorization':'Bearer '+credential,'Content-Type':'application/json'},method='POST')
             try:
-                with urllib.request.urlopen(request, timeout=min(idle, timeout, remaining)) as response:
+                with open_request(request, timeout=min(idle, timeout, remaining)) as response:
                     header_seconds = time.monotonic()-attempt_started
                     # A request's deadline includes connection, wait, and output.
                     available = min(timeout, deadline-time.monotonic())

@@ -1,6 +1,6 @@
 # 独立运行与初始化
 
-报告核心、提示词、规则、合成校准示例及文档模板都在技能包中。`runtime/` 保存报告核心，`templates/document-layout.json` 控制 Word 排版。初始化后，把同版本核心校验复制到个人工作区的 `_runtime/`，生成记录也在该处保存，安装目录可保持只读。
+报告核心、提示词、规则、合成校准示例及文档模板都在技能包中。`runtime/` 保存报告核心，`templates/document-layout.json` 控制 Word 排版。初始化后，把同版本核心校验复制到个人工作区的 `_runtime/`，生成记录也在该处保存。
 
 ## 首次初始化
 
@@ -26,11 +26,11 @@ sh scripts/run.sh init
 
 对飞书表格使用 [飞书批次入口](feishu-base.md)。下面的 `generate` 用于已经准备好的本地材料。
 
-按 [个人模型配置](model-setup.md) 由用户选择平台、模型并在本机粘贴密钥。初始化不携带任何 API Key，配置完成后再执行 `doctor`。macOS/Linux 示例中 `$ENTRY` 为 `scripts/run.sh` 的绝对路径。
+按 [个人模型配置](model-setup.md) 使用技能目录下的手动配置文件，或沿用 WorkBuddy 对话配置。`doctor` 检查本机状态，`check-model` 向当前接口发送一条验证请求。macOS/Linux 示例中 `$ENTRY` 为 `scripts/run.sh` 的绝对路径。
 
 ```bash
-sh "$ENTRY" configure --provider deepseek --model deepseek-flash --key-file "$KEY_FILE"
 sh "$ENTRY" doctor
+sh "$ENTRY" check-model
 sh "$ENTRY" generate --run-dir "$RUN" \
   --taskbook 'raw/taskbook/项目任务书.docx' --report 'raw/report/阶段总结.pdf' \
   --types review achievement --record-id "$RECORD" --project-name "$PROJECT"
@@ -42,7 +42,7 @@ Windows 使用 `& .\scripts\run.ps1` 及相同参数。只要一份报告时用 
 
 成功返回 `status: checked`、原材料摘要、检查结果和 `documents`。每个文档项使用 `docx` 字段给出实际文件路径，另有 SHA-256、字节大小和卡片状态；为兼容已有回执保留的 `internal_links`、`bookmarks` 均为 0。`checked.json`、可编辑 Markdown 及 DOCX 保存在项目 `reports/` 下。正式归档上传回执对应的 DOCX。内部完整正文、原文上下文和审核记录保留在 `diagnostics` 指向的本地底稿，精简附页不改变核对标准。
 
-重试复用相同项目目录、材料和模型设置，已完成步骤按摘要核验后续跑。不同版本的核心分别保存，避免把旧版本审批结果冒充本轮检查。`doctor` 检查本机就绪状态，密钥的实际调用权限由 `configure` 的最小模型请求验证。
+重试复用相同项目目录、材料和模型设置，已完成步骤按摘要核验后续跑。不同版本的核心分别保存，避免把旧版本审批结果冒充本轮检查。
 
 正式报告不使用文内跳转，附页通过内容名称和原材料位置供读者查找。底稿中的原有链接和引用绑定继续用于程序检查，不复制为正式报告中的跳转按钮。正文、表格与卡片文字可编辑；编辑后的文件属于人工修改稿，原有程序回执对应生成时的原文件。
 

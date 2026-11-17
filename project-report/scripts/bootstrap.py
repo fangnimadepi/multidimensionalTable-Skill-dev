@@ -12,6 +12,8 @@ import sys
 import uuid
 import venv
 
+from model_setup import LOCAL_MODEL_CONFIG
+
 PACKAGE = Path(__file__).resolve().parent.parent
 
 
@@ -75,7 +77,8 @@ def initialize(directory):
     if not credentials.is_absolute():
         credentials = config_file.parent / credentials
     return {"status": "initialized", "python": str(python), "config": str(config_file),
-            "model_setup_needed": not credentials.is_file(),
+            "manual_model_config": str(LOCAL_MODEL_CONFIG), "manual_model_active": LOCAL_MODEL_CONFIG.is_file(),
+            "model_setup_needed": not LOCAL_MODEL_CONFIG.is_file() and not credentials.is_file(),
             **({"previous_environment": str(previous_environment)} if previous_environment else {})}
 
 

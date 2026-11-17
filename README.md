@@ -1,12 +1,12 @@
 # 鲸研项目报告 Skill
 
-可独立发布的 WorkBuddy Skill，支持飞书或本地取材，生成可编辑的项目履约审查、阶段成果分析，或仅任务书的预期成果分析。当前版本为 0.4.0。
+可独立发布的 WorkBuddy Skill，支持飞书或本地取材，生成可编辑的项目履约审查、阶段成果分析，或仅任务书的预期成果分析。当前版本为 0.4.1。
 
 ## 使用
 
 克隆仓库后，在 WorkBuddy 选择「从本地添加技能」，导入仓库下完整的 `project-report` 目录。如果已安装旧版本，先更新为这份目录。首次使用按 [使用说明](project-report/README_使用说明.md) 完成初始化和个人报告模型设置。首次初始化自动准备用户目录内的 Python 与锁定依赖，后续复用。飞书取材使用 WorkBuddy 中已连接账号的权限。
 
-Windows 也可以从仓库根目录用 PowerShell 运行 `& .\project-report\scripts\run.ps1 init`，再用同一入口执行 `doctor` 查看环境状态。模型密钥按使用说明在本机设置，飞书连接器在 WorkBuddy 内授权。
+Windows 也可以从仓库根目录用 PowerShell 运行 `& .\project-report\scripts\run.ps1 init`，再用同一入口执行 `doctor` 查看环境状态。在已导入的 Skill 目录中，将 `config/model.example.json` 复制为 `config/model.local.json`，即可在同一文件填写报告模型的 API 地址、模型名和密钥。详见 [个人报告模型配置](project-report/references/model-setup.md)。飞书连接器在 WorkBuddy 内授权。
 
 ```text
 为我飞书「项目进展看板」里的全部项目生成履约审查和成果分析，并归档。
@@ -17,11 +17,12 @@ WorkBuddy 将范围和报告要求传给包内命令，由脚本清点、下载�
 ## 包内结构
 
 - `project-report/SKILL.md` 为宿主入口，`references/` 保存业务流程和阅读规范。
+- `project-report/config/model.example.json` 提供手动模型配置模板，个人配置保存在同目录的 `model.local.json`。
 - `runtime/scripts/` 保存文档解析、OCR、模型调用、提示词及来源和一致性核对。
 - `runtime/config/` 保存通用规则、合成校准示例和成果表达方法。
 - `templates/document-layout.json` 控制 Word 的字号、页面和表格样式。
 - `scripts/` 包含初始化、个人密钥设置、飞书批次执行和 Word 导出。
-- `requirements.lock` 固定依赖。环境、真实材料、个人密钥和运行底稿分别存入用户工作目录。
+- `requirements.lock` 固定依赖。环境、真实材料和运行底稿保存在用户工作目录。个人密钥由本机配置读取。
 
 正式附件使用独立 DOCX。成果报告含事实表、简版、科普长版和可编辑横版卡片。报告附页以普通文字列出关键内容的原材料位置，不依赖文内跳转；完整原文和核对记录保存在本地底稿。材料映射明确时直接执行，表格重名、多版本或需要新建归档列时再简短询问。
 

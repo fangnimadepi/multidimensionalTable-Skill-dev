@@ -5,10 +5,60 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.error
+from urllib.parse import urlsplit
 from pathlib import Path
+
+
+LOCAL_MODEL_CONFIG = Path(__file__).resolve().parent.parent / "config/model.local.json"
+MANUAL_KEY_ENV = "JINGYAN_REPORT_API_KEY"
+
+
+def manual_model_options(providers, use_credentials):
+    path = LOCAL_MODEL_CONFIG
+    if path.is_symlink():
+        raise ValueError("手动模型配置需为技能目录内的普通文件。")
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise ValueError("config/model.local.json 应为 JSON 文件。")
+    try:
+        values = json.loads(path.read_text(encoding="utf-8-sig"))
+    except ValueError:
+        raise ValueError("config/model.local.json 格式错误，请检查 JSON。") from None
+    if not isinstance(values, dict):
+        raise ValueError("手动模型配置应包含 api_base、model 和 api_key。")
+    base = values.get("api_base")
+    if not isinstance(base, str) or not re.fullmatch(r"[!-~]{1,2048}", base) or "\\" in base:
+        raise ValueError("api_base 应为有效的模型接口地址。")
+    try:
+        url = urlsplit(base)
+        host = url.hostname
+        port = url.port
+    except ValueError:
+        raise ValueError("api_base 的主机或端口格式错误。") from None
+    if (not host or port == 0 or url.username is not None or url.password is not None or "?" in base or "#" in base
+            or (url.scheme != "https" and (url.scheme != "http" or host not in {"localhost", "127.0.0.1", "::1"}))):
+        raise ValueError("api_base 应使用 HTTPS 或本机回环 HTTP，且不含账号、查询串或片段。")
+    base = base.rstrip("/").removesuffix("/chat/completions").rstrip("/")
+    model = values.get("model")
+    if not isinstance(model, str) or not re.fullmatch(r"[!-~]{1,200}", model):
+        raise ValueError("请在 config/model.local.json 填写模型接口所用的 model 名称。")
+    if use_credentials:
+        key = values.get("api_key")
+        if not isinstance(key, str) or not re.fullmatch(r"[!-~]{1,4096}", key):
+            raise ValueError("请在 config/model.local.json 填写原始 api_key，避免空格或 Bearer 前缀。")
+        os.environ[MANUAL_KEY_ENV] = key
+    provider = next((name for name, info in providers.items() if urlsplit(info[1]).hostname == host),
+                    "openai_compatible")
+    options = {"provider": provider, "api_base": base, "text_model": model, "api_key_env": MANUAL_KEY_ENV,
+               "manual_endpoint": True}
+    if provider == "openai_compatible":
+        options["stream"] = False
+    return options
 
 
 def credential_path(config_file, runtime):
@@ -48,19 +98,9 @@ def load_credentials(config_file, runtime, key_env):
     os.environ[key_env] = key
 
 
-def save_model(config_file, config, provider, model, key):
-    from local_reports import setup_runtime
-
-    candidate = json.loads(json.dumps(config))
-    runtime = candidate.setdefault("report_runtime", {})
-    runtime.update(provider=provider, model=model)
-    _, options = setup_runtime(config_file, candidate, use_credentials=False)
+def verify_connection(options, key):
     from llm_client import complete_json
-    from private_model_settings import _credentials
-    from private_files import protect_private_file
-    from review_common import atomic_write_json
 
-    _credentials({"provider": provider, "apiKey": key})
     try:
         response, _ = complete_json('Return JSON {"ok":true}.', {},
                                    {**options, "stream": False, "request_attempts": 1,
@@ -70,9 +110,26 @@ def save_model(config_file, config, provider, model, key):
     except urllib.error.HTTPError as error:
         raise ValueError(f"模型验证未通过，HTTP {error.code}，请检查平台、密钥、余额及模型权限。") from None
     except (OSError, RuntimeError, ValueError, KeyError, IndexError, TypeError):
-        raise ValueError("模型连接或响应验证未完成，已保留原配置，请检查平台和模型后重试。") from None
+        raise ValueError("模型连接或响应验证未完成，请检查接口地址、模型权限和密钥后重试。") from None
     if response.get("ok") is not True:
-        raise ValueError("模型未返回预期的验证结果，已保留原配置。")
+        raise ValueError("模型未返回预期的验证结果，请确认模型支持 JSON 响应。")
+
+
+def save_model(config_file, config, provider, model, key):
+    from local_reports import setup_runtime
+
+    if LOCAL_MODEL_CONFIG.exists() or LOCAL_MODEL_CONFIG.is_symlink():
+        raise ValueError("当前技能使用 config/model.local.json。请编辑该文件，保存后用 check-model 检查连接。")
+    candidate = json.loads(json.dumps(config))
+    runtime = candidate.setdefault("report_runtime", {})
+    runtime.update(provider=provider, model=model)
+    _, options = setup_runtime(config_file, candidate, use_credentials=False)
+    from private_model_settings import _credentials
+    from private_files import protect_private_file
+    from review_common import atomic_write_json
+
+    _credentials({"provider": provider, "apiKey": key})
+    verify_connection(options, key)
     path = credential_path(config_file, runtime)
     previous = read_credentials(path) if path.exists() else {}
     previous[options["api_key_env"]] = key

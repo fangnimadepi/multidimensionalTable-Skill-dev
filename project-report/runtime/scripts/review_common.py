@@ -9,7 +9,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-MODEL_KEY_NAMES = {'DEEPSEEK_API_KEY', 'DASHSCOPE_API_KEY', 'SILICONFLOW_API_KEY'}
+MODEL_KEY_NAMES = {'DEEPSEEK_API_KEY', 'DASHSCOPE_API_KEY', 'SILICONFLOW_API_KEY', 'JINGYAN_REPORT_API_KEY'}
 
 
 def atomic_write_bytes(path: Path, value: bytes):

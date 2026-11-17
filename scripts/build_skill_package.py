@@ -15,7 +15,10 @@ def build():
     temporary = destination.with_suffix(".tmp")
     with ZipFile(temporary, "w", ZIP_DEFLATED) as package:
         for path in sorted(SOURCE.rglob("*")):
-            if path.is_file() and path.suffix in EXTENSIONS and not EXCLUDED.intersection(path.relative_to(SOURCE).parts):
+            relative = path.relative_to(SOURCE)
+            if relative.parts[0] == "config" and relative.as_posix() != "config/model.example.json":
+                continue
+            if path.is_file() and path.suffix in EXTENSIONS and not EXCLUDED.intersection(relative.parts):
                 if path.is_symlink():
                     raise ValueError("发布包源文件不使用符号链接。")
                 package.write(path, path.relative_to(ROOT))
@@ -23,7 +26,7 @@ def build():
         required = {"project-report/SKILL.md", "project-report/requirements.lock", "project-report/scripts/run.sh",
                     "project-report/scripts/run.ps1", "project-report/scripts/feishu_batch.py",
                     "project-report/scripts/feishu_connector.py", "project-report/runtime/scripts/report_worker.py",
-                    "project-report/templates/document-layout.json"}
+                    "project-report/templates/document-layout.json", "project-report/config/model.example.json"}
         if package.testzip() or not required <= set(package.namelist()):
             raise ValueError("发布包完整性检查失败。")
     temporary.replace(destination)
