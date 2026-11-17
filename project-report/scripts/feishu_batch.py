@@ -31,6 +31,7 @@ ALIASES = {
 }
 WINDOWS_DEVICES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
                    *(f"LPT{i}" for i in range(1, 10))}
+STANDARD_REPORT_TYPES = ("review", "achievement")
 
 
 def field_mapping(data, args):
@@ -62,6 +63,8 @@ def field_mapping(data, args):
             matches = [item for item in eligible if item["id"] in generated]
         else:
             matches = [item for item in eligible if item["id"] not in generated and item["name"] in ALIASES[role]]
+        if role == "name" and not matches and len(eligible) == 1 and eligible[0]["name"] == "文本":
+            matches = eligible
         if role in explicit:
             selected[role] = explicit[role]
         elif len(matches) == 1:
@@ -129,7 +132,7 @@ def save_plan(path, plan):
 def summarize(plan, path):
     return {"batch": str(path), "table": plan["table_name"], "columns": plan["column_names"],
             "total": plan["total"], "counts": plan["counts"], "archive": plan["archive_requested"],
-            "requested_types": plan["requested_types"],
+            "requested_types": plan["requested_types"], "preflight_seconds": plan.get("preflight_seconds"),
             "projects": [{"record_id": entry["record_id"], "name": entry["project_name"],
                           "status": entry["status"], "types": entry["types"], "reason": entry["reason"],
                           **{key: entry[key] for key in ("choices", "receipt", "diagnostics", "timing", "archive")
@@ -137,6 +140,7 @@ def summarize(plan, path):
 
 
 def inspect(connector, root, args):
+    started = time.monotonic()
     table = connector.resolve(args.target, args.table)
     fields, names = field_mapping(connector.fields(table), args)
     view = None if args.whole_table else table["view_id"]
@@ -168,6 +172,7 @@ def inspect(connector, root, args):
         entry["source_cells"] = row["source_cells"]
         if entry["status"] == "needs_selection":
             entry["choices"] = {role: entry[role] for role in ("taskbook", "report") if len(entry[role]) > 1}
+    plan["preflight_seconds"] = round(time.monotonic() - started, 2)
     path = folder / "batch.json"
     save_plan(path, plan)
     return {"status": "planned", **summarize(plan, path)}
@@ -440,30 +445,41 @@ def positive(value):
     return number
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, type=Path)
-    commands = parser.add_subparsers(dest="command", required=True)
-    scan = commands.add_parser("inspect", help="只读清点，保存批次文件")
-    scan.add_argument("--target", required=True)
-    scan.add_argument("--table")
-    scan.add_argument("--types", nargs="+", choices=REPORT_TITLES, default=["review", "achievement"],
-                      help="指定报告类型，默认生成履约审查和成果分析")
-    delivery = scan.add_mutually_exclusive_group()
-    delivery.add_argument("--archive", action="store_true", help="核对成稿后归档到飞书原记录")
-    delivery.add_argument("--local-only", dest="archive", action="store_false", help="仅生成本地文稿")
-    scan.set_defaults(archive=False)
-    scan.add_argument("--replace", action="store_true")
-    scan.add_argument("--whole-table", action="store_true")
-    scope = scan.add_mutually_exclusive_group()
+def target_arguments():
+    target = argparse.ArgumentParser(add_help=False)
+    target.add_argument("--target", required=True)
+    target.add_argument("--table")
+    target.add_argument("--replace", action="store_true")
+    target.add_argument("--whole-table", action="store_true")
+    scope = target.add_mutually_exclusive_group()
     scope.add_argument("--all", action="store_true")
     scope.add_argument("--project", action="append")
     scope.add_argument("--count", type=positive)
     scope.add_argument("--first", type=positive)
     for role in ALIASES:
-        scan.add_argument(f"--{role}-column")
-    scan.add_argument("--no-report", action="store_true")
-    scan.add_argument("--material", nargs=3, action="append", metavar=("RECORD", "ROLE", "ATTACHMENT"))
+        target.add_argument(f"--{role}-column")
+    target.add_argument("--no-report", action="store_true")
+    target.add_argument("--material", nargs=3, action="append", metavar=("RECORD", "ROLE", "ATTACHMENT"))
+    return target
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    metadata = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+    version = re.search(r"(?m)^version:\s*(\S+)", metadata)
+    skill_version = version[1] if version else "unknown"
+    parser.add_argument("--version", action="version", version=skill_version)
+    parser.add_argument("--config", required=True, type=Path)
+    commands = parser.add_subparsers(dest="command", required=True)
+    target = target_arguments()
+    deliver = commands.add_parser("deliver", parents=[target], help="生成两份项目报告并写回原记录")
+    deliver.add_argument("--limit", type=positive)
+    deliver.set_defaults(types=list(STANDARD_REPORT_TYPES), archive=True)
+    scan = commands.add_parser("inspect", parents=[target], help="只读清点，保存指定交付方式的批次")
+    scan.add_argument("--types", nargs="+", choices=REPORT_TITLES, default=list(STANDARD_REPORT_TYPES))
+    delivery = scan.add_mutually_exclusive_group(required=True)
+    delivery.add_argument("--archive", action="store_true", help="核对成稿后归档到飞书原记录")
+    delivery.add_argument("--local-only", dest="archive", action="store_false", help="仅生成本地文稿")
     execute = commands.add_parser("run", help="执行已清点的批次，保留检查点")
     execute.add_argument("--batch", required=True, type=Path)
     execute.add_argument("--limit", type=positive)
@@ -474,19 +490,23 @@ def main():
         config = load_json(config_file)
         root = workspace(config_file, config)
         connector = Connector(Path.cwd().resolve())
-        if args.command == "inspect":
+        if args.command in {"inspect", "deliver"}:
             if args.replace and not args.archive:
                 raise ValueError("替换旧报告需要本次归档请求。")
             if args.no_report and args.report_column:
                 raise ValueError("请在指定阶段总结列和确认缺列之间选择。")
             result = inspect(connector, root, args)
+            if args.command == "deliver":
+                progress(step="清点完成，可按原批次续跑", batch=result["batch"], total=result["total"])
+                planned = SimpleNamespace(batch=Path(result["batch"]), limit=args.limit, retry_failed=False)
+                result = run(connector, config_file, config, root, planned)
         else:
             result = run(connector, config_file, config, root, args)
     except NeedsSelection as error:
         result = {"status": "needs_selection", "message": str(error), "candidates": error.candidates}
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, ImportError) as error:
         result = {"status": "failed", "message": str(error)}
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps({"skill_version": skill_version, **result}, ensure_ascii=False))
     return {"planned": 0, "completed": 0, "needs_selection": 3, "incomplete": 3}.get(result["status"], 2)
 
 
