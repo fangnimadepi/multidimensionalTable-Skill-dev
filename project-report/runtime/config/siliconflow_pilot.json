@@ -1,0 +1,8 @@
+{
+  "api_base": "https://api.siliconflow.cn/v1",
+  "text_model": "deepseek-ai/DeepSeek-V3.2",
+  "vision_model": "Qwen/Qwen3-VL-32B-Instruct",
+  "max_tokens": 900,
+  "temperature": 0,
+  "enable_thinking_for_text": false
+}

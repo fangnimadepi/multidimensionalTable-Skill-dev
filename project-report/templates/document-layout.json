@@ -1,0 +1,17 @@
+{
+  "version": "word-layout-v1.1",
+  "portrait_cm": [21.0, 29.7],
+  "landscape_cm": [29.7, 16.70625],
+  "margin_vertical_cm": 1.8,
+  "margin_horizontal_cm": 1.9,
+  "body_pt": 11,
+  "title_pt": 22,
+  "heading_pt": [15, 12, 11],
+  "line_spacing": 1.35,
+  "table_border": "D9D9D9",
+  "table_header_fill": "EAF1F7",
+  "text_color": "202B36",
+  "heading_color": "244D70",
+  "subheading_color": "365D7C",
+  "link_color": "0563C1"
+}

@@ -1,0 +1,14 @@
+{
+  "workspace_root": "./鲸研工作区",
+  "max_file_mib": 128,
+  "max_project_mib": 192,
+  "download_retries": 1,
+  "parse_fallbacks": 1,
+  "reuse_materials": true,
+  "report_runtime": {
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "ocr_engine": "rapidocr",
+    "credentials_file": "local/jingyan-model.env"
+  }
+}
