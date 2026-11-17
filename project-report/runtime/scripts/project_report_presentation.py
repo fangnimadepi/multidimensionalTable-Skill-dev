@@ -98,7 +98,7 @@ def presentation_numbers(text, *, chinese_counts=False):
         # Dates written 2026.8.31 must not become the decimal token 2026.8.
         value = re.sub(r'((?:19|20)\d{2})[./-](0?[1-9]|1[0-2])[./-](0?[1-9]|[12]\d|3[01])(?!\d)',
                        r'\1年\2月\3日', value)
-        value = re.sub(r'((?:19|20)\d{2})[./-](0?[1-9]|1[0-2])(?=[\s月:：—－\-至~～,，;；。)）\]】]|完成|节点|$)',
+        value = re.sub(r'((?:19|20)\d{2})[./-](0?[1-9]|1[0-2])(?=[\s月:：—－\-至~～,，;；。()（）\[\]【】]|完成|节点|$)',
                        lambda match: match[1] + '年' + str(int(match[2])) + '月', value)
         # List labels are short ordinals. A long identifier followed by .X
         # (e.g. an application number after a colon) is source data, not a bullet.

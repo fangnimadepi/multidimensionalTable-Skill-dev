@@ -214,6 +214,28 @@ class FeishuBatchTests(unittest.TestCase):
             generate.assert_not_called()
         self.assertEqual(self.connector.events, [])
 
+    def test_validation_failure_stops_repeated_generation_until_runtime_changes(self):
+        plan = batch.inspect(self.connector, self.root, inspect_args())
+        args = SimpleNamespace(batch=Path(plan["batch"]), limit=None, retry_failed=True)
+        model = {"api_key_env": "config-key"}
+        failure = batch.WorkerFailure("正文检查未通过", self.root / "attempt",
+                                      error_code="report_validation_failed")
+        with (patch.object(batch, "generate", side_effect=failure) as generate,
+              patch.object(batch, "setup_runtime", return_value=(self.root, model)),
+              patch.object(batch, "api_key", return_value=True)):
+            result = batch.run(self.connector, self.config, {}, self.root, args)
+            self.assertFalse(result["projects"][0]["failure"]["retryable"])
+            result = batch.run(self.connector, self.config, {}, self.root, args)
+            self.assertEqual(result["counts"], {"failed": 1})
+            generate.assert_called_once()
+        with (patch.object(batch, "generate", side_effect=self.make_report) as generate,
+              patch.object(batch, "setup_runtime", return_value=(self.root / "updated-engine", model)),
+              patch.object(batch, "api_key", return_value=True)):
+            result = batch.run(self.connector, self.config, {}, self.root, args)
+            self.assertEqual(result["counts"], {"archived": 1})
+            generate.assert_called_once()
+            self.assertNotIn("failure", result["projects"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

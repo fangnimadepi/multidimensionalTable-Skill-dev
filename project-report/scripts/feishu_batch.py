@@ -3,6 +3,7 @@
 import argparse
 from collections import Counter
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -135,7 +136,7 @@ def summarize(plan, path):
             "requested_types": plan["requested_types"], "preflight_seconds": plan.get("preflight_seconds"),
             "projects": [{"record_id": entry["record_id"], "name": entry["project_name"],
                           "status": entry["status"], "types": entry["types"], "reason": entry["reason"],
-                          **{key: entry[key] for key in ("choices", "receipt", "diagnostics", "timing", "archive")
+                          **{key: entry[key] for key in ("choices", "receipt", "diagnostics", "timing", "archive", "failure")
                              if entry.get(key)}} for entry in plan["records"]]}
 
 
@@ -400,6 +401,14 @@ def run(connector, config_file, config, root, args):
                                 if not api_key(runtime[1]["api_key_env"]):
                                     raise ValueError("报告模型密钥未配置，请先完成鲸研模型设置。")
                                 phase = "generate"
+                            context = hashlib.sha256(json.dumps([str(runtime[0]), runtime[1]],
+                                                                sort_keys=True).encode()).hexdigest()
+                            failure = entry.get("failure", {})
+                            if (failure.get("error_code") == "report_validation_failed"
+                                    and entry.get("generation_context") == context):
+                                raise WorkerFailure(entry["reason"], Path(entry["diagnostics"]),
+                                                    error_code=failure["error_code"])
+                            entry["generation_context"] = context
                             progress(project=entry["project_name"], step="生成并核对报告")
                             build = SimpleNamespace(types=entry["types"], taskbook=materials["taskbook"]["path"],
                                                     report=materials.get("report", {}).get("path"),
@@ -420,11 +429,15 @@ def run(connector, config_file, config, root, args):
                             entry["types"] == ["forecast"] and "review" in entry["requested_types"]
                         ) else "已完成"
                         entry.pop("diagnostics", None)
+                        entry.pop("failure", None)
                 except (OSError, ValueError, KeyError, TypeError, RuntimeError, ImportError) as error:
                     entry["status"] = {"archive": "archive_failed", "configure": "pending"}.get(phase, "failed")
                     entry["reason"] = str(error)
                     if isinstance(error, WorkerFailure):
                         entry["diagnostics"] = str(error.directory)
+                        entry["failure"] = error.details()
+                    else:
+                        entry.pop("failure", None)
                     if phase == "archive":
                         entry["archive"] = {"status": "failed", "receipt": str(run_dir / "archive.json")}
                 checkpoint()

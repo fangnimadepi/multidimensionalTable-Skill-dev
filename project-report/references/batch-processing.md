@@ -11,6 +11,10 @@
 | 多份同类材料 | 请用户选择版本 |
 | 文件损坏、权限不足或读取失败 | 记录对应步骤和错误 |
 
-可用 `--limit` 按宿主命令时限拆分大批次。单项失败后继续其余项目，最终说明本地出稿和飞书归档各自的结果。同一失败可在确认原因后用 `--retry-failed` 续跑原目录。用户要求重新生成时，新清点产生新的批次。
+可用 `--limit` 按宿主命令时限拆分大批次。单项失败后继续其余项目，最终说明本地出稿和飞书归档各自的结果。
+
+生成失败时，项目结果的 `failure` 提供错误码、`retryable`、`next_action` 和诊断路径。正文或来源检查失败返回 `report_validation_failed` 和 `retryable: false`。宿主记录失败并反馈给用户。相同运行核心和模型下，脚本会阻止同一批次反复生成已确定失败的项目。维护人员修复并更新运行核心后，可用原批次 `--retry-failed` 继续。
+
+临时连接或超时失败返回 `retryable: true` 时，宿主可用 `--retry-failed` 自动重试一次。重试仍失败时交付错误摘要。现场排障保留原材料、缓存和底稿，源码修复交给维护人员。归档失败继续使用原回执补写，避免重复生成。用户要求重新生成时，新清点产生新的批次。
 
 外部工作流已经整理好材料元数据时，可继续用 `plan-batch --inventory FILE --output FILE --types review achievement` 生成纯本地分流清单。输入包含 `base_token`、`table_id`、`fields` 和 `records`。每条记录包括 `record_id`、`project_name`、任务书附件列表 `taskbook`、阶段附件列表 `report`，附件包含 `name`、`file_token`、`size`。读不到的记录填写 `input_error`，避免误判为缺材料。这个接口只负责分流。

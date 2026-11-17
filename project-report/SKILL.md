@@ -5,7 +5,7 @@ display_name_en: Research Project Reports
 description: 根据项目任务书和阶段总结报告生成履约审查、阶段成果与后续推进分析，或根据任务书生成预期成果分析。支持本地材料和飞书多维表格取材及归档。
 description_zh: 读项目材料、生成履约审查和成果分析，并将飞书项目的报告归档到原记录。
 description_en: Review project progress, explain outcomes, and archive Feishu project reports to the original record.
-version: 0.4.3
+version: 0.4.4
 author: fangnimadepi
 examples_zh:
   - 根据附件中的任务书和中期总结报告，生成履约审查和成果分析。
@@ -27,3 +27,5 @@ examples_zh:
 **手动配置报告模型。** 在当前技能目录将 `config/model.example.json` 复制为 `config/model.local.json`，用户在本机填写 API 地址、模型名和密钥。用 `init` 返回的 `manual_model_config` 定位实际文件，用 `check-model` 验证连接。仅由脚本读取密钥。没有手动配置文件时可继续使用 `configure`。
 
 **交付。** 以 `checked.json` 核对成稿，以 `archive.json` 和回读状态确认归档。涉及归档的项目到 `archived` 才算交付完成。直接根据批次结果汇报报告类型、归档状态、缺材料及失败情况。完整引文和核对记录留在本机底稿。报告结构见 [履约审查](references/review-report.md) 和 [成果分析](references/achievement-reports.md)。
+
+**失败时的处理。** 先读命令返回的 `failure.error_code`、`retryable`、`next_action` 和诊断目录。`retryable: false` 时停止该项目，将错误码、批次和诊断目录反馈给用户，并继续批次中的其他项目。临时连接失败可从原批次重试一次，再次失败即反馈。源码分析、清除步骤缓存和更改校验规则交给维护人员处理。保留已下载材料和完成步骤。`config/model.local.json`、密钥文件及 `.env` 只由配置与检查脚本读取，宿主工具不得直接读取或打印其中内容。检查模型连接用 `check-model`。

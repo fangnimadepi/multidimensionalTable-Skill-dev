@@ -17,9 +17,38 @@ from read_docx import extract, file_hash, inside
 
 
 class WorkerFailure(ValueError):
-    def __init__(self, message, directory):
+    def __init__(self, message, directory, *, error_code="report_worker_failed", retryable=False):
         super().__init__(message)
         self.directory = directory
+        self.error_code = error_code
+        self.retryable = retryable
+
+    def details(self):
+        return {"diagnostics": str(self.directory), "error_code": self.error_code,
+                "retryable": self.retryable,
+                "next_action": ("临时连接或等待失败，可用原批次重试一次。" if self.retryable else
+                                "本项目已停止。将错误码和诊断目录交给维护人员，修复后继续。")}
+
+
+def worker_failure(directory, error):
+    if isinstance(error, subprocess.TimeoutExpired):
+        return WorkerFailure("报告处理超过等待时限，已保留完成步骤。", directory,
+                             error_code="report_timeout", retryable=True)
+    try:
+        detail = load_json(directory / "worker-failure.json")
+        error_type, message = detail.get("type", detail.get("error_type", "")), detail.get("message", "")
+    except (OSError, ValueError, AttributeError):
+        error_type, message = "", ""
+    if error_type == "ValueError":
+        return WorkerFailure("报告正文或来源检查未通过，已停止本项目并保留诊断记录。", directory,
+                             error_code="report_validation_failed")
+    retryable = error_type in {"TimeoutError", "ConnectionError", "URLError"} or (
+        error_type == "RuntimeError" and any(value in message for value in (
+            "TimeoutError", "URLError", "RemoteDisconnected", "ConnectionError", "HTTP 429", "HTTP 500",
+            "HTTP 502", "HTTP 503", "HTTP 504")))
+    return WorkerFailure("报告处理未完成，已停止本项目并保留诊断记录。", directory,
+                         error_code="model_connection_failed" if retryable else "report_worker_failed",
+                         retryable=retryable)
 
 
 def load_json(path):
@@ -195,7 +224,7 @@ def generate(args, root, run_dir, config, model):
                 subprocess.run([sys.executable, str(root / "scripts" / "report_worker.py"), str(manifest)],
                                cwd=root, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=900)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-            raise WorkerFailure("报告生成或来源检查未完成，已保留材料和完成步骤。", attempt) from error
+            raise worker_failure(attempt, error) from error
     result = load_json(attempt / "generated.json")
     markdown = checked_reports(result, types, hashes, fingerprint)
     output_root = inside(run_dir / "reports", run_dir)
@@ -285,7 +314,7 @@ def main():
     except (OSError, ValueError, KeyError, ImportError, RuntimeError, TypeError, SyntaxError) as error:
         detail = {"status": "failed", "error": str(error)}
         if isinstance(error, WorkerFailure):
-            detail["diagnostics"] = str(error.directory)
+            detail.update(error.details())
         print(json.dumps(detail, ensure_ascii=False))
         return 2
     print(json.dumps(result, ensure_ascii=False))
