@@ -1,8 +1,11 @@
 """Verify the batch boundary around attachments, checked output and resume."""
 
+from contextlib import redirect_stdout
+import hashlib
+from io import StringIO
+import json
 from pathlib import Path
 import sys
-import hashlib
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -116,6 +119,43 @@ class FeishuBatchTests(unittest.TestCase):
         batch.atomic_write_json(bundle / "checked.json", receipt)
         return receipt
 
+    def test_standard_command_plans_both_reports_and_archives_them_to_the_project(self):
+        batch.atomic_write_json(self.config, {"workspace_root": str(self.root)})
+        command = ["feishu_batch.py", "--config", str(self.config), "inspect", "--target", "测试表",
+                   "--project", "样例项目", "--archive"]
+        output = StringIO()
+        with (patch.object(sys, "argv", command), patch.object(batch, "Connector", return_value=self.connector),
+              redirect_stdout(output)):
+            self.assertEqual(batch.main(), 0)
+        plan = json.loads(output.getvalue())
+        self.assertTrue(plan["archive"])
+        self.assertEqual(plan["requested_types"], ["review", "achievement"])
+        self.assertEqual(self.connector.events, [])
+        args = SimpleNamespace(batch=Path(plan["batch"]), limit=None, retry_failed=False)
+        with (patch.object(batch, "generate", side_effect=self.make_report),
+              patch.object(batch, "setup_runtime", return_value=(self.root, {"api_key_env": "config-key"})),
+              patch.object(batch, "api_key", return_value=True)):
+            result = batch.run(self.connector, self.config, {}, self.root, args)
+        self.assertEqual(result["counts"], {"archived": 1})
+        receipt = batch.load_json(Path(result["projects"][0]["archive"]["receipt"]))
+        self.assertEqual(set(receipt["verified"]), {"review", "achievement"})
+        self.assertEqual(self.connector.events[:3], [("download", "src1"), ("download", "src2"), ("upload", 2)])
+        self.assertCountEqual(self.connector.events[3:],
+                              [("download", item["file_token"]) for item in receipt["verified"].values()])
+
+    def test_explicit_single_report_keeps_local_preview(self):
+        batch.atomic_write_json(self.config, {"workspace_root": str(self.root)})
+        command = ["feishu_batch.py", "--config", str(self.config), "inspect", "--target", "测试表",
+                   "--types", "achievement", "--local-only"]
+        output = StringIO()
+        with (patch.object(sys, "argv", command), patch.object(batch, "Connector", return_value=self.connector),
+              redirect_stdout(output)):
+            self.assertEqual(batch.main(), 0)
+        plan = json.loads(output.getvalue())
+        self.assertFalse(plan["archive"])
+        self.assertEqual(plan["requested_types"], ["achievement"])
+        self.assertNotIn("output", plan["columns"])
+
     def test_partial_archive_resumes_without_regeneration_or_duplicate_upload(self):
         plan = batch.inspect(self.connector, self.root, inspect_args())
         self.assertEqual(plan["total"], 1)
@@ -144,6 +184,12 @@ class FeishuBatchTests(unittest.TestCase):
         for arguments in (inspect_args(count=2), inspect_args(output_column="项目中期报告")):
             with self.assertRaises(NeedsSelection):
                 batch.inspect(self.connector, self.root, arguments)
+        self.assertEqual(self.connector.events, [])
+
+    def test_missing_archive_column_does_not_plan_a_local_only_delivery(self):
+        with patch.object(self.connector, "fields", return_value=FIELDS[:3]):
+            with self.assertRaisesRegex(NeedsSelection, "未找到明确的归档附件列"):
+                batch.inspect(self.connector, self.root, inspect_args(replace=False))
         self.assertEqual(self.connector.events, [])
 
     def test_changed_input_stops_download_and_generation_when_resuming_plan(self):

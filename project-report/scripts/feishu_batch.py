@@ -27,7 +27,7 @@ ALIASES = {
     "taskbook": {"项目任务书", "任务书", "项目计划书", "课题任务书"},
     "report": {"项目中期报告", "中期报告", "项目阶段总结报告", "阶段总结报告", "项目总结报告",
                "中期总结报告", "项目中期总结报告", "结题报告", "结题总结报告"},
-    "output": {"项目报告", "项目报告归档", "鲸研报告", "鲸研项目报告", "报告归档", "生成报告"},
+    "output": {"项目报告", "项目报告归档", "鲸研报告", "鲸研项目报告", "报告归档", "生成报告", "项目分析报告"},
 }
 WINDOWS_DEVICES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
                    *(f"LPT{i}" for i in range(1, 10))}
@@ -66,7 +66,10 @@ def field_mapping(data, args):
             selected[role] = explicit[role]
         elif len(matches) == 1:
             selected[role] = matches[0]["id"]
-        elif matches or role in {"name", "taskbook", "output"}:
+        elif role == "output" and not matches:
+            raise NeedsSelection("未找到明确的归档附件列，请指定已有列或确认新建「项目报告归档」。",
+                                 [item["name"] for item in eligible])
+        elif matches or role in {"name", "taskbook"}:
             raise NeedsSelection(f"请指定{role_label(role)}列。", [item["name"] for item in matches or eligible])
     if "report" not in selected and not args.no_report and args.types != ["forecast"]:
         unknown = [item["name"] for item in data if item["type"] == "attachment"
@@ -126,6 +129,7 @@ def save_plan(path, plan):
 def summarize(plan, path):
     return {"batch": str(path), "table": plan["table_name"], "columns": plan["column_names"],
             "total": plan["total"], "counts": plan["counts"], "archive": plan["archive_requested"],
+            "requested_types": plan["requested_types"],
             "projects": [{"record_id": entry["record_id"], "name": entry["project_name"],
                           "status": entry["status"], "types": entry["types"], "reason": entry["reason"],
                           **{key: entry[key] for key in ("choices", "receipt", "diagnostics", "timing", "archive")
@@ -443,8 +447,12 @@ def main():
     scan = commands.add_parser("inspect", help="只读清点，保存批次文件")
     scan.add_argument("--target", required=True)
     scan.add_argument("--table")
-    scan.add_argument("--types", nargs="+", choices=REPORT_TITLES, required=True)
-    scan.add_argument("--archive", action="store_true")
+    scan.add_argument("--types", nargs="+", choices=REPORT_TITLES, default=["review", "achievement"],
+                      help="指定报告类型，默认生成履约审查和成果分析")
+    delivery = scan.add_mutually_exclusive_group()
+    delivery.add_argument("--archive", action="store_true", help="核对成稿后归档到飞书原记录")
+    delivery.add_argument("--local-only", dest="archive", action="store_false", help="仅生成本地文稿")
+    scan.set_defaults(archive=False)
     scan.add_argument("--replace", action="store_true")
     scan.add_argument("--whole-table", action="store_true")
     scope = scan.add_mutually_exclusive_group()

@@ -1,6 +1,6 @@
 # 鲸研项目报告 Skill
 
-可独立发布的 WorkBuddy Skill，支持飞书或本地取材，生成可编辑的项目履约审查、阶段成果分析，或仅任务书的预期成果分析。当前版本为 0.4.1。
+可独立发布的 WorkBuddy Skill，支持飞书或本地取材，生成可编辑的项目履约审查、阶段成果分析，或仅任务书的预期成果分析。当前版本为 0.4.2。
 
 ## 使用
 
@@ -9,10 +9,10 @@
 Windows 也可以从仓库根目录用 PowerShell 运行 `& .\project-report\scripts\run.ps1 init`，再用同一入口执行 `doctor` 查看环境状态。在已导入的 Skill 目录中，将 `config/model.example.json` 复制为 `config/model.local.json`，即可在同一文件填写报告模型的 API 地址、模型名和密钥。详见 [个人报告模型配置](project-report/references/model-setup.md)。飞书连接器在 WorkBuddy 内授权。
 
 ```text
-为我飞书「项目进展看板」里的全部项目生成履约审查和成果分析，并归档。
+为我飞书「项目进展看板」里的全部项目生成总结报告。
 ```
 
-WorkBuddy 将范围和报告要求传给包内命令，由脚本清点、下载、生成、归档和回读。可从原批次继续处理未完成项目。命令见 [飞书取材与归档](project-report/references/feishu-base.md)，首次配置见 [运行与初始化](project-report/references/report-runtime.md)。
+飞书项目的总结报告默认包含履约审查和成果分析。脚本清点、下载、生成并归档到原项目记录，再回读确认附件。指定「先预览，暂不写回」时可仅生成本地文稿。可从原批次继续处理未完成项目。命令见 [飞书取材与归档](project-report/references/feishu-base.md)，首次配置见 [运行与初始化](project-report/references/report-runtime.md)。
 
 ## 包内结构
 
