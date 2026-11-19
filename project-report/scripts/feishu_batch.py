@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -14,7 +15,9 @@ import time
 from types import SimpleNamespace
 
 from feishu_connector import Connector, ConnectorError, NeedsSelection, attachments, identifier, repeated
-from local_reports import WorkerFailure, exclusive_work, generate, load_json, setup_runtime, workspace
+from local_reports import WorkerFailure, exclusive_work, generate, load_json, setup_runtime, setup_host_runtime, workspace
+from host_protocol import HostTaskPending
+from host_tasks import pending_result, command as host_command
 from plan_batch import make_plan
 from read_docx import file_hash, inside
 
@@ -139,7 +142,7 @@ def summarize(plan, path):
             "requested_types": plan["requested_types"], "preflight_seconds": plan.get("preflight_seconds"),
             "projects": [{"record_id": entry["record_id"], "name": entry["project_name"],
                           "status": entry["status"], "types": entry["types"], "reason": entry["reason"],
-                          **{key: entry[key] for key in ("choices", "receipt", "diagnostics", "timing", "archive", "failure")
+                          **{key: entry[key] for key in ("choices", "receipt", "diagnostics", "timing", "archive", "failure", "model_task")
                              if entry.get(key)}} for entry in plan["records"]]}
 
 
@@ -148,8 +151,11 @@ def inspect(connector, root, args):
     table = connector.resolve(args.target, args.table)
     fields, names = field_mapping(connector.fields(table), args)
     view = None if args.whole_table else table["view_id"]
-    if args.first is not None and (not view or table.get("record_id")):
-        raise NeedsSelection("处理前若干项需要指定有明确顺序的飞书视图链接。")
+    if args.first is not None:
+        if args.whole_table or table.get("record_id"):
+            raise NeedsSelection("处理前若干项需要指定有明确顺序的飞书视图链接。")
+        if not view:
+            view = connector.ordered_view(table)
     rows = []
     for row in connector.records(table, list(fields.values()), view):
         sources = snapshot(row, fields)
@@ -171,7 +177,7 @@ def inspect(connector, root, args):
     batches.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(prefix="feishu-", dir=batches))
     plan.update(version="feishu-batch-v1", table_name=table["table_name"], column_names=names, view_id=view,
-                archive_requested=args.archive, replace=args.replace)
+                archive_requested=args.archive, replace=args.replace, execution_mode=getattr(args, "mode", "host"))
     for entry, row in zip(plan["records"], selected):
         entry["source_cells"] = row["source_cells"]
         if entry["status"] == "needs_selection":
@@ -328,15 +334,38 @@ def archive(connector, plan, entry, receipt, run_dir, stage, batch_name):
     args = ["--record-id", entry["record_id"], "--field-id", state["field_id"]]
     if missing:
         connector.table_call("record-upload-attachment", plan, *args, *repeated("--file", missing))
-    after = current_record(connector, plan, entry) if missing else before
     before_tokens = {file["file_token"] for file in before}
-    after_tokens = {file["file_token"] for file in after}
-    if not before_tokens <= after_tokens:
-        raise ValueError("追加报告后原附件列表发生变化，请核对表格。")
+    # Poll reads only. Upload is never repeated within this attempt, and an
+    # actual checksum mismatch or changed input must not be retried as latency.
+    for attempt in range(3):
+        try:
+            after = current_record(connector, plan, entry) if missing or attempt else before
+            after_tokens = {file["file_token"] for file in after}
+            if not before_tokens <= after_tokens:
+                raise ValueError("追加报告后原附件列表发生变化，请核对表格。")
+            visible = all(matches(after, name, doc) for name, doc in targets.values())
+        except ConnectorError as error:
+            if not error.retryable or attempt == 2:
+                raise
+            visible = False
+        if visible:
+            break
+        if attempt == 2:
+            raise ValueError("归档附件尚未全部可见；已保留生成结果，请从原批次继续确认归档。")
+        time.sleep(attempt + 1)
+    state["visibility_checks"] = attempt + 1
     for kind, (name, doc) in targets.items():
         file = matches(after, name, doc)
-        if file is None or connector.download(plan, entry["record_id"], file, stage / f"verify-{kind}.docx") != doc["sha256"]:
-            raise ValueError(f"归档回读未通过：{REPORT_TITLES[kind]}")
+        for retry in range(3):
+            try:
+                digest = connector.download(plan, entry["record_id"], file, stage / f"verify-{kind}.docx")
+                break
+            except ConnectorError as error:
+                if not error.retryable or retry == 2:
+                    raise
+                time.sleep(retry + 1)
+        if digest != doc["sha256"]:
+            raise ValueError(f"归档文件摘要与本地成稿不一致，已停止替换：{REPORT_TITLES[kind]}")
         state["verified"][kind] = {**file, "sha256": doc["sha256"]}
         atomic_write_json(path, state)
     new_tokens = {file["file_token"] for file in state["verified"].values()}
@@ -367,13 +396,32 @@ def run(connector, config_file, config, root, args):
         plan = load_json(path)
         if plan.get("version") != "feishu-batch-v1":
             raise ValueError("此批次未由飞书清点命令创建。")
-        pending = {"pending", "running", "archive_failed"}
+        mode = plan.get("execution_mode", "host")
+        if mode not in {"host", "api"}:
+            raise ValueError("批次执行模式无效。")
+        pending = {"pending", "running", "archive_failed", "awaiting_host"}
         if args.retry_failed:
             pending.add("failed")
-        entries = [entry for entry in plan["records"] if entry["status"] in pending][:args.limit]
-        runtime = None
+        entries = [entry for entry in plan["records"] if entry["status"] in pending]
         base = identifier(plan["base_token"])
         table = identifier(plan["table_id"], "tbl")
+        supplied = getattr(args, "response", None)
+        if supplied:
+            supplied_path = Path(supplied).resolve()
+            owners = [entry for entry in plan["records"] if supplied_path.is_relative_to(
+                inside(root / f"{base}_{table}" / identifier(entry["record_id"], "rec") / path.parent.name, root))]
+            if mode != "host" or len(owners) != 1:
+                raise ValueError("响应文件不属于当前宿主批次，请使用 model_task 指定的路径。")
+            owner = owners[0]
+            if owner in entries:
+                entries = [owner] + [entry for entry in entries if entry is not owner]
+            elif owner["status"] in {"generated", "archived"}:
+                supplied = None  # Idempotent replay after a completed final step.
+            else:
+                raise ValueError("该项目没有可继续的宿主待办，请先查看该项目状态。")
+        entries = entries[:args.limit]
+        runtime = None
+        configuration_blocked = False
         for entry in entries:
             identifier(entry["record_id"], "rec")
             project = inside(root / f"{base}_{table}" / entry["record_id"], root)
@@ -400,14 +448,14 @@ def run(connector, config_file, config, root, args):
                         if receipt is None:
                             if runtime is None:
                                 phase = "configure"
-                                runtime = setup_runtime(config_file, config)
-                                if not api_key(runtime[1]["api_key_env"]):
+                                runtime = setup_runtime(config_file, config) if mode == "api" else setup_host_runtime(config_file, config)
+                                if mode == "api" and not api_key(runtime[1]["api_key_env"]):
                                     raise ValueError("报告模型密钥未配置，请先完成鲸研模型设置。")
                                 phase = "generate"
                             context = hashlib.sha256(json.dumps([str(runtime[0]), runtime[1]],
                                                                 sort_keys=True).encode()).hexdigest()
                             failure = entry.get("failure", {})
-                            if (failure.get("error_code") == "report_validation_failed"
+                            if (mode == "api" and failure.get("error_code") == "report_validation_failed"
                                     and entry.get("generation_context") == context):
                                 raise WorkerFailure(entry["reason"], Path(entry["diagnostics"]),
                                                     error_code=failure["error_code"],
@@ -417,10 +465,14 @@ def run(connector, config_file, config, root, args):
                             progress(project=entry["project_name"], step="生成并核对报告")
                             build = SimpleNamespace(types=entry["types"], taskbook=materials["taskbook"]["path"],
                                                     report=materials.get("report", {}).get("path"),
-                                                    record_id=entry["record_id"], project_name=entry["project_name"])
+                                                    record_id=entry["record_id"], project_name=entry["project_name"],
+                                                    response=supplied, continuation={"kind": "feishu", "config_file": str(config_file),
+                                                        "batch": str(path)})
+                            supplied = None
                             receipt = generate(build, runtime[0], run_dir, config, runtime[1])
                             validate_receipt(receipt, run_dir, entry, materials)
                         entry["receipt"] = receipt["receipt"]
+                        supplied = None
                         timing["generate_seconds"] = receipt["seconds"]
                         checkpoint()
                         if plan["archive_requested"]:
@@ -435,7 +487,14 @@ def run(connector, config_file, config, root, args):
                         ) else "已完成"
                         entry.pop("diagnostics", None)
                         entry.pop("failure", None)
+                        entry.pop("model_task", None)
+                except HostTaskPending as task:
+                    entry.update(status="awaiting_host", reason="当前会话模型正在完成报告阶段", model_task=task.task)
+                    checkpoint()
+                    return {**pending_result(task.task, ["feishu", "run", "--batch", str(path), "--response", task.task["response_file"]]),
+                            **summarize(plan, path)}
                 except (OSError, ValueError, KeyError, TypeError, RuntimeError, ImportError) as error:
+                    entry.pop("model_task", None)
                     entry["status"] = {"archive": "archive_failed", "configure": "pending"}.get(phase, "failed")
                     entry["reason"] = str(error)
                     if isinstance(error, WorkerFailure):
@@ -443,12 +502,19 @@ def run(connector, config_file, config, root, args):
                         entry["failure"] = error.details()
                     else:
                         entry.pop("failure", None)
+                        if callable(getattr(error, "details", None)):
+                            entry["failure"] = error.details()
                     if phase == "archive":
                         entry["archive"] = {"status": "failed", "receipt": str(run_dir / "archive.json")}
                 checkpoint()
                 progress(project=entry["project_name"], status=entry["status"], counts=plan["counts"])
                 if phase == "configure":
+                    configuration_blocked = True
                     break
+        if mode == "host" and not configuration_blocked and any(entry["status"] in {"pending", "running", "awaiting_host"} for entry in plan["records"]):
+            return {"status": "continue_batch", "resume_arguments": ["feishu", "run", "--batch", str(path)],
+                    "next_command": host_command([sys.executable, Path(__file__).resolve(), "--config", config_file, "run", "--batch", path]),
+                    "next_action": "执行 next_command 继续原批次，不重新清点或创建批次。", **summarize(plan, path)}
         if set(plan["counts"]) <= {"generated", "archived"}:
             status = "completed"
         else:
@@ -477,6 +543,8 @@ def target_arguments():
     for role in ALIASES:
         target.add_argument(f"--{role}-column")
     target.add_argument("--no-report", action="store_true")
+    target.add_argument("--mode", choices=("host", "api"), default="host",
+                        help="默认由当前会话模型完成；仅明确选择 api 时读取独立模型配置")
     target.add_argument("--material", nargs=3, action="append", metavar=("RECORD", "ROLE", "ATTACHMENT"))
     return target
 
@@ -502,9 +570,11 @@ def main():
     execute.add_argument("--batch", required=True, type=Path)
     execute.add_argument("--limit", type=positive)
     execute.add_argument("--retry-failed", action="store_true")
+    execute.add_argument("--response", type=Path, help="当前宿主待办的 JSON 响应文件")
     args = parser.parse_args()
     try:
         config_file = args.config.resolve(strict=True)
+        os.environ["JINGYAN_CONFIG"] = str(config_file)
         config = load_json(config_file)
         root = workspace(config_file, config)
         connector = Connector(Path.cwd().resolve())
@@ -523,9 +593,11 @@ def main():
     except NeedsSelection as error:
         result = {"status": "needs_selection", "message": str(error), "candidates": error.candidates}
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, ImportError) as error:
-        result = {"status": "failed", "message": str(error)}
+        result = {"status": "failed", "message": str(error),
+                  **(error.details() if callable(getattr(error, "details", None)) else {})}
     print(json.dumps({"skill_version": skill_version, **result}, ensure_ascii=False))
-    return {"planned": 0, "completed": 0, "needs_selection": 3, "incomplete": 3}.get(result["status"], 2)
+    return {"planned": 0, "completed": 0, "needs_model": 0, "continue_batch": 0,
+            "needs_selection": 3, "incomplete": 3}.get(result["status"], 2)
 
 
 if __name__ == "__main__":

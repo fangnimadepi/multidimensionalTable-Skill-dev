@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -13,6 +14,22 @@ import urllib.request
 
 from llm_runtime import emit, request_slot, check_cancelled
 from siliconflow_stream import read_chat_stream
+
+
+class ModelRequestError(RuntimeError):
+    """Safe request metadata; never retain upstream bodies, URLs or credentials."""
+
+    def __init__(self, provider, category, *, status=None, retryable=False):
+        self.category = category
+        self.http_status = status
+        self.retryable = retryable
+        label = 'HTTP ' + str(status) if status is not None else category
+        super().__init__(f'{provider} 模型调用未完成（{label}），已停止。')
+
+
+def http_category(status):
+    return {401: 'authentication', 402: 'balance', 403: 'forbidden', 429: 'rate_limit'}.get(
+        status, 'server' if status >= 500 else 'http')
 
 
 class NoEndpointRedirect(urllib.request.HTTPRedirectHandler):
@@ -35,6 +52,8 @@ def request_payload(system, user, config, tokens):
     if provider == 'deepseek':
         value['thinking'] = {'type': 'disabled'}
     elif provider in {'dashscope', 'siliconflow'}:
+        value['enable_thinking'] = False
+    elif config.get('enable_thinking') is False:
         value['enable_thinking'] = False
     if provider == 'dashscope' and value['stream']:
         value['stream_options'] = {'include_usage': True}
@@ -61,7 +80,8 @@ def complete_json(system, user, config, tokens, credential):
         for attempt in range(attempts + json_repairs):
             check_cancelled()
             result = {}; remaining = deadline-time.monotonic()
-            if remaining <= 0: raise TimeoutError('模型调用超过总等待时限，已停止重试。')
+            if remaining <= 0:
+                raise ModelRequestError(provider, 'timeout', retryable=True)
             attempt_started = time.monotonic()
             request = urllib.request.Request(config['api_base'].rstrip('/')+'/chat/completions',
                 data=json.dumps(payload, ensure_ascii=False).encode(),
@@ -121,13 +141,17 @@ def complete_json(system, user, config, tokens, credential):
                 return answer, usage
             except urllib.error.HTTPError as error:
                 if error.code not in {429,500,502,503,504}:
-                    raise RuntimeError(f'{provider} HTTP {error.code}; inspect account/model privately') from None
+                    emit('request_failed', provider=provider, attempt=attempt+1, reason='HTTP '+str(error.code))
+                    raise ModelRequestError(provider, http_category(error.code), status=error.code) from None
                 category = 'HTTP '+str(error.code)
+                failure_category, failure_status = http_category(error.code), error.code
                 network_failures += 1
                 can_retry = network_failures < attempts
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, http.client.RemoteDisconnected, ConnectionError) as error:
                 category = type(error).__name__
+                failure_status = None
                 if isinstance(error, json.JSONDecodeError):
+                    failure_category = 'response_format'
                     choice = result.get('choices', [{}])[0]
                     emit('response_format_error', reason=error.msg, position=error.pos,
                          receivedCharacters=len(choice.get('message', {}).get('content') or ''),
@@ -141,11 +165,17 @@ def complete_json(system, user, config, tokens, credential):
                         if choice.get('finish_reason') == 'length':
                             payload['max_tokens'] = max(payload['max_tokens'], min(payload['max_tokens'] + 2000, 16000))
                 else:
+                    reason = getattr(error, 'reason', error)
+                    failure_category = ('tls' if isinstance(reason, ssl.SSLError) else
+                                        'timeout' if isinstance(reason, (TimeoutError, socket.timeout)) else 'connection')
                     network_failures += 1
-                    can_retry = network_failures < attempts
+                    can_retry = failure_category != 'tls' and network_failures < attempts
+            except (KeyError, IndexError, TypeError):
+                raise ModelRequestError(provider, 'response_format') from None
             will_retry = can_retry and attempt+1 < attempts+json_repairs and deadline-time.monotonic() > 1
             emit('request_retry' if will_retry else 'request_failed', provider=provider, attempt=attempt+1, reason=category)
             if not will_retry:
-                raise RuntimeError(f'{provider} 模型调用未完成（{category}），已达到重试或等待上限。') from None
+                raise ModelRequestError(provider, failure_category, status=failure_status,
+                                        retryable=failure_category in {'rate_limit', 'server', 'connection', 'timeout'}) from None
             time.sleep(min(2**attempt, max(0, deadline-time.monotonic())))
     raise AssertionError('Unreachable model call')

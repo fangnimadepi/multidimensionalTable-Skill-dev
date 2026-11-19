@@ -128,7 +128,10 @@ def exception_details(error):
         except ValueError:
             name = file.name
         frames.append({"file": name, "line": frame.lineno, "function": frame.name})
-    return {"type": type(error).__name__, "message": safe_text(error), "frames": frames}
+    result = {"type": type(error).__name__, "message": safe_text(error), "frames": frames}
+    if type(error).__name__ == 'ModelRequestError':
+        result.update(model_category=error.category, http_status=error.http_status, retryable=error.retryable)
+    return result
 
 
 def failure_details(folder, error, job=None):

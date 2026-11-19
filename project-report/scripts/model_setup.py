@@ -17,6 +17,16 @@ LOCAL_MODEL_CONFIG = Path(__file__).resolve().parent.parent / "config/model.loca
 MANUAL_KEY_ENV = "JINGYAN_REPORT_API_KEY"
 
 
+class ModelSetupError(ValueError):
+    def __init__(self, message, code, *, status=None, retryable=False):
+        super().__init__(message)
+        self.code, self.http_status, self.retryable = code, status, retryable
+
+    def details(self):
+        return {"error_code": self.code, "retryable": self.retryable,
+                **({"http_status": self.http_status} if self.http_status else {})}
+
+
 def manual_model_options(providers, use_credentials):
     path = LOCAL_MODEL_CONFIG
     if path.is_symlink():
@@ -99,20 +109,36 @@ def load_credentials(config_file, runtime, key_env):
 
 
 def verify_connection(options, key):
-    from llm_client import complete_json
+    from llm_client import ModelRequestError, complete_json
 
     try:
         response, _ = complete_json('Return JSON {"ok":true}.', {},
                                    {**options, "stream": False, "request_attempts": 1,
-                                    "request_json_repair_attempts": 0, "request_timeout_seconds": 20,
+                                    "request_json_repair_attempts": 1, "request_timeout_seconds": 20,
                                     "request_idle_timeout_seconds": 20, "request_total_budget_seconds": 20},
-                                   32, key)
+                                   128, key)
+    except ModelRequestError as error:
+        messages = {
+            "authentication": "模型密钥验证未通过（HTTP 401），请在模型设置中核对密钥。",
+            "balance": "模型账号余额不足（HTTP 402），请充值或选择其他已配置的模型。",
+            "forbidden": "当前账号没有该模型的访问权限（HTTP 403），请核对平台及模型权限。",
+            "rate_limit": "模型请求达到限额（HTTP 429），请稍后重试。",
+            "server": "模型平台暂时不可用，请稍后重试。",
+            "tls": "模型接口的安全连接验证失败，请检查网络或证书配置。",
+            "timeout": "模型验证请求超时，请稍后重试。",
+            "connection": "未能连接模型接口，请检查网络和接口地址。",
+            "response_format": "模型响应格式不完整或不支持 JSON 输出，请核对模型及接口协议。",
+        }
+        raise ModelSetupError(messages.get(error.category, "模型接口验证失败，请核对接口及模型权限。"),
+                              "model_" + error.category, status=error.http_status,
+                              retryable=error.retryable) from None
     except urllib.error.HTTPError as error:
-        raise ValueError(f"模型验证未通过，HTTP {error.code}，请检查平台、密钥、余额及模型权限。") from None
+        raise ModelSetupError(f"模型验证未通过，HTTP {error.code}，请检查模型账号。",
+                              "model_http", status=error.code) from None
     except (OSError, RuntimeError, ValueError, KeyError, IndexError, TypeError):
         raise ValueError("模型连接或响应验证未完成，请检查接口地址、模型权限和密钥后重试。") from None
     if response.get("ok") is not True:
-        raise ValueError("模型未返回预期的验证结果，请确认模型支持 JSON 响应。")
+        raise ModelSetupError("模型未返回预期的验证结果，请确认模型支持 JSON 响应。", "model_response_format")
 
 
 def save_model(config_file, config, provider, model, key):
@@ -122,7 +148,7 @@ def save_model(config_file, config, provider, model, key):
         raise ValueError("当前技能使用 config/model.local.json。请编辑该文件，保存后用 check-model 检查连接。")
     candidate = json.loads(json.dumps(config))
     runtime = candidate.setdefault("report_runtime", {})
-    runtime.update(provider=provider, model=model)
+    runtime.update(provider=provider, model=model, model_source="configured")
     _, options = setup_runtime(config_file, candidate, use_credentials=False)
     from private_model_settings import _credentials
     from private_files import protect_private_file
@@ -151,12 +177,34 @@ def save_model(config_file, config, provider, model, key):
             "connection_verified": True, "config_file": str(config_file), "credentials_file": str(path)}
 
 
+def bind_workbuddy(config_file, config, selected=None, explicit=None):
+    from local_reports import setup_runtime
+    from workbuddy_models import choose
+
+    path, model_id, model, _, _ = choose(explicit, selected)
+    # Only the reference is persisted; no copy of WorkBuddy's API Key is made.
+    candidate = json.loads(json.dumps(config))
+    target = candidate.setdefault("report_runtime", {})
+    target.update(model_source="workbuddy", workbuddy_config=str(path), workbuddy_model_id=model_id)
+    _, checked_options = setup_runtime(config_file, candidate)
+    from review_common import atomic_write_json
+
+    verify_connection(checked_options, os.environ[checked_options["api_key_env"]])
+    atomic_write_json(config_file, candidate)
+    return {"status": "configured", "model_source": "workbuddy", "model": model,
+            "connection_verified": True, "config_file": str(config_file)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--provider", required=True, choices=("deepseek", "dashscope", "siliconflow"))
-    parser.add_argument("--model", required=True)
-    source = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--provider", choices=("deepseek", "dashscope", "siliconflow"))
+    mode.add_argument("--from-workbuddy", action="store_true")
+    parser.add_argument("--model")
+    parser.add_argument("--workbuddy-config", type=Path)
+    parser.add_argument("--list", action="store_true", help="仅列出可复用的 WorkBuddy 模型名称")
+    source = parser.add_mutually_exclusive_group()
     source.add_argument("--key-file", type=Path)
     source.add_argument("--key-stdin", action="store_true")
     source.add_argument("--key-prompt", action="store_true")
@@ -164,15 +212,28 @@ def main():
     try:
         config_file = args.config.resolve(strict=True)
         config = json.loads(config_file.read_text(encoding="utf-8"))
-        if args.key_file:
-            key = args.key_file.read_text(encoding="utf-8-sig").strip()
-        elif args.key_stdin:
-            key = sys.stdin.read(1024).strip()
+        if args.from_workbuddy:
+            if args.key_file or args.key_stdin or args.key_prompt:
+                parser.error("复用 WorkBuddy 时无需再次提供密钥。")
+            if args.list:
+                from workbuddy_models import available_models
+                _, choices = available_models(args.workbuddy_config)
+                result = {"status": "models", "candidates": choices}
+            else:
+                result = bind_workbuddy(config_file, config, args.model, args.workbuddy_config)
         else:
-            key = getpass.getpass("请粘贴报告模型 API Key（输入隐藏）：").strip()
-        result = save_model(config_file, config, args.provider, args.model, key)
+            if not args.model or args.list or args.workbuddy_config or not (args.key_file or args.key_stdin or args.key_prompt):
+                parser.error("独立配置需指定 --model 及一种密钥输入方式。")
+            if args.key_file:
+                key = args.key_file.read_text(encoding="utf-8-sig").strip()
+            elif args.key_stdin:
+                key = sys.stdin.read(1024).strip()
+            else:
+                key = getpass.getpass("请粘贴报告模型 API Key（输入隐藏）：").strip()
+            result = save_model(config_file, config, args.provider, args.model, key)
     except (OSError, ValueError, KeyError, ImportError, RuntimeError) as error:
-        print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False))
+        print(json.dumps({"status": "failed", "error": str(error),
+                          **(error.details() if callable(getattr(error, "details", None)) else {})}, ensure_ascii=False))
         return 2
     print(json.dumps(result, ensure_ascii=False))
     return 0

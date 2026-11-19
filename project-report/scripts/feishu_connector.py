@@ -60,7 +60,7 @@ class Connector:
 
     def call(self, action, *arguments):
         environment = os.environ.copy()
-        for key in ("DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY", "DASHSCOPE_API_KEY", MANUAL_KEY_ENV):
+        for key in ("DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY", "DASHSCOPE_API_KEY", MANUAL_KEY_ENV, "JINGYAN_WORKBUDDY_API_KEY"):
             environment.pop(key, None)
         environment.update(LARKSUITE_CLI_NO_UPDATE_NOTIFIER="1", LARKSUITE_CLI_NO_SKILLS_NOTIFIER="1",
                            LARK_CLI_NO_PROXY_WARN="1")
@@ -128,6 +128,16 @@ class Connector:
         if data.get("total", len(fields)) != len(fields):
             raise ValueError("飞书字段列表不完整。")
         return fields
+
+    def ordered_view(self, table):
+        listing = self.table_call("view-list", table)
+        views = listing.get("views")
+        if (not isinstance(views, list) or listing.get("has_more") is True
+                or listing.get("total", len(views)) != len(views)):
+            raise ValueError("飞书视图列表不完整，请提供目标视图的链接。")
+        if len(views) != 1:
+            raise NeedsSelection("请选择按哪个视图的顺序处理前几项。", [view["name"] for view in views])
+        return identifier(views[0]["id"], "vew")
 
     def records(self, table, fields, view):
         arguments = repeated("--field-id", fields)

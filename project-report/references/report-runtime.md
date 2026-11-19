@@ -1,6 +1,6 @@
 # 独立运行与初始化
 
-报告核心、提示词、规则、合成校准示例及文档模板都在技能包中。`runtime/` 保存报告核心，`templates/document-layout.json` 控制 Word 排版。初始化后，把同版本核心校验复制到个人工作区的 `_runtime/`，生成记录也在该处保存。
+默认宿主流程在 scripts/host_*.py；解析工具、可选 API 报告核心、提示词、规则、合成校准示例及文档模板都在技能包中。`runtime/` 保存报告核心，`templates/document-layout.json` 控制 Word 排版。初始化后，把同版本核心校验复制到个人工作区的 `_runtime/`，生成记录也在该处保存。
 
 ## 首次初始化
 
@@ -14,7 +14,9 @@ sh scripts/run.sh init
 & .\scripts\run.ps1 init
 ```
 
-初始化优先查找可用 Python 3.11—3.13，以及 WorkBuddy 已管理的 Python。未找到时从 uv 官方渠道初始化用户目录内的 uv 与 Python 3.12，随后按包内 `requirements.lock` 安装解析、OCR 和 Word 依赖。环境默认保存在用户主目录的 `.jingyan/`。首次安装需要访问依赖下载站点，后续按锁定版本复用。网络、权限或组织策略失败时报告具体失败步骤，不修改安全策略。
+可先用 `doctor` 只读检查；即使尚未初始化，也不会安装软件、联网或创建目录。初始化优先查找可用 Python 3.11—3.13，以及 WorkBuddy 已管理的 Python。未找到时从 uv 官方渠道初始化用户目录内的 uv 与 Python 3.12。默认仅按 `requirements.lock` 安装 Word 和文字 PDF 的基础依赖。环境保存在用户主目录的 `.jingyan/`，后续按锁定版本复用。
+
+扫描 PDF 在解析发现需要 OCR、且缺少组件时，才准备 `requirements-ocr.lock` 中的扩展依赖。也可用 `init --ocr` 提前准备。首次准备扫描 PDF 可能比普通文档久；之后复用组件。普通文档不会要求 OCR 就绪。网络、权限或组织策略失败时返回具体阶段并停止，请求用户确认后从原入口继续，不修改安全策略或更换安装方式。
 
 用 `JINGYAN_HOME` 指定其他个人数据目录，用 `JINGYAN_CONFIG` 指定已有个人配置文件。初始化回执中的 `python` 和 `config` 可供宿主后续直接调用，默认入口也可继续使用。示例配置见 [workspace-config.example.json](workspace-config.example.json)。个人配置包含工作目录、模型和文件限制，自动安装的解释器由入口定位。
 
@@ -26,21 +28,20 @@ sh scripts/run.sh init
 
 对飞书表格使用 [飞书批次入口](feishu-base.md)。下面的 `generate` 用于已经准备好的本地材料。
 
-按 [个人模型配置](model-setup.md) 使用技能目录下的手动配置文件，或沿用 WorkBuddy 对话配置。`doctor` 检查本机状态，`check-model` 向当前接口发送一条验证请求。macOS/Linux 示例中 `$ENTRY` 为 `scripts/run.sh` 的绝对路径。
+默认使用 WorkBuddy 当前会话模型，内置与自定义模型都不需要另配密钥。`doctor` 检查基础环境和可选 OCR；`check-model` 只用于用户明确选择的独立 API 模式，默认流程不执行。可选配置见 [个人模型配置](model-setup.md)。macOS/Linux 示例中 `$ENTRY` 为 `scripts/run.sh` 的绝对路径。
 
 ```bash
 sh "$ENTRY" doctor
-sh "$ENTRY" check-model
 sh "$ENTRY" generate --run-dir "$RUN" \
   --taskbook 'raw/taskbook/项目任务书.docx' --report 'raw/report/阶段总结.pdf' \
   --types review achievement --record-id "$RECORD" --project-name "$PROJECT"
 ```
 
-Windows 使用 `& .\scripts\run.ps1` 及相同参数。只要一份报告时用 `--types review` 或 `--types achievement`。只有任务书时使用 `--types forecast`，省略 `--report`。`read --run-dir ... --role report --input ...` 用于检查 PDF 页码及 OCR 情况，正常生成会自行解析。
+Windows 使用 `& .\scripts\run.ps1` 及相同参数。需要独立 API 时，在 generate 参数中显式加 --mode api；配置文件存在不改变默认宿主模式。只要一份报告时用 `--types review` 或 `--types achievement`。只有任务书时使用 `--types forecast`，省略 `--report`。`read --run-dir ... --role report --input ...` 用于检查 PDF 页码及 OCR 情况，正常生成会自行解析。
 
 ## 回执与恢复
 
-成功返回 `status: checked`、原材料摘要、检查结果和 `documents`。每个文档项使用 `docx` 字段给出实际文件路径，另有 SHA-256、字节大小和卡片状态；为兼容已有回执保留的 `internal_links`、`bookmarks` 均为 0。`checked.json`、可编辑 Markdown 及 DOCX 保存在项目 `reports/` 下。正式归档上传回执对应的 DOCX。内部完整正文、原文上下文和审核记录保留在 `diagnostics` 指向的本地底稿，精简附页不改变核对标准。
+默认命令可能先返回 `status: needs_model`，由宿主按 [固定阶段协议](host-workflow.md) 读取任务、写响应并续跑；这不等于报告已完成。检查及导出完成后才返回 `status: checked`、原材料摘要、检查结果和 `documents`。每个文档项使用 `docx` 字段给出实际文件路径，另有 SHA-256、字节大小和卡片状态；为兼容已有回执保留的 `internal_links`、`bookmarks` 均为 0。`checked.json`、可编辑 Markdown 及 DOCX 保存在项目 `reports/` 下。正式归档上传回执对应的 DOCX。内部完整正文、原文上下文和审核记录保留在 `diagnostics` 指向的本地底稿，精简附页不改变核对标准。
 
 重试复用相同项目目录、材料和模型设置，已完成步骤按摘要核验后续跑。不同版本的核心分别保存，避免把旧版本审批结果冒充本轮检查。
 

@@ -6,6 +6,7 @@
   "parse_fallbacks": 1,
   "reuse_materials": true,
   "report_runtime": {
+    "model_source": "auto",
     "provider": "deepseek",
     "model": "deepseek-flash",
     "ocr_engine": "rapidocr",

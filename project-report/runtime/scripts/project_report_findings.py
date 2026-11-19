@@ -8,7 +8,7 @@ import project_report_contract as c
 import project_report_presentation as p
 import project_report_assurance as a
 
-VERSION = 'project-report-findings-v0.6.1'
+VERSION = 'project-report-findings-v0.6.2'
 CATEGORIES = ('进度与计划节点差异', '交付内容与技术规格差异', '数量与性能指标差异',
               '验收标准与测评口径差异', '报告表述不一致')
 FIELDS = ('plan_requirement', 'reported_progress', 'difference', 'discuss_with_pi')
@@ -226,14 +226,25 @@ def evidence_context(report, source, records):
         add('成果认定综述', summary['text'], summary['citations'])
     active = {sid for use in uses for sid in use['source_ids']}
     grouped = {}
-    preferred = {(card['side'], card['ref']): card['source_id'] for card in report['presentation'].get('evidence_notes', {}).get('items', [])}
+    # A source block keeps its first assigned identity even when its original
+    # short excerpt is no longer used after conclusion replacement. Choosing
+    # the first *active excerpt* renumbered identical source blocks at export.
+    canonical = {}
+    for entry in report['source_index']:
+        canonical.setdefault((entry['side'], entry['ref']), entry['source_id'])
+    for card in report['presentation'].get('evidence_notes', {}).get('items', []):
+        key = (card['side'], card['ref'])
+        entry = entries.get(card['source_id'])
+        if entry is None or (entry['side'], entry['ref']) != key:
+            raise ValueError('Evidence identity does not match its source block')
+        canonical[key] = card['source_id']
     for sid, entry in entries.items():
         if sid not in active:
             continue
         key = (entry['side'], entry['ref'])
         if key not in grouped:
             grouped[key] = {**copy.deepcopy(entry), 'alias_ids': [], 'uses': []}
-            grouped[key]['source_id'] = preferred.get(key, entry['source_id'])
+            grouped[key]['source_id'] = canonical[key]
             grouped[key]['source_text'] = source['plan_blocks'][entry['ref']] if entry['side'] == 'plan' else records[entry['ref']]['text']
         grouped[key]['alias_ids'].append(sid)
     for group in grouped.values():

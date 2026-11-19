@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project-report/scripts"))
 import feishu_batch as batch
-from feishu_connector import ConnectorError, NeedsSelection
+from feishu_connector import Connector, ConnectorError, NeedsSelection
 
 
 FIELDS = [
@@ -225,8 +225,94 @@ class FeishuBatchTests(unittest.TestCase):
             generate.assert_not_called()
         self.assertEqual(self.connector.events, [])
 
-    def test_validation_failure_stops_repeated_generation_until_runtime_changes(self):
+    def test_readback_visibility_delay_retries_reads_without_uploading_or_generating_again(self):
+        plan = batch.inspect(self.connector, self.root, inspect_args(replace=False))
+        args = SimpleNamespace(batch=Path(plan["batch"]), limit=None, retry_failed=False)
+        original = self.connector.record
+        hidden = [True]
+
+        def delayed(*arguments):
+            row = original(*arguments)
+            if hidden and any(file["file_token"].startswith("new") for file in row["fldArchive"]):
+                hidden.pop()
+                return {**row, "fldArchive": [file for file in row["fldArchive"] if not file["file_token"].startswith("new")]}
+            return row
+
+        with (patch.object(batch, "generate", side_effect=self.make_report) as generate,
+              patch.object(batch, "setup_runtime", return_value=(self.root, {"api_key_env": "config-key"})),
+              patch.object(batch, "api_key", return_value=True),
+              patch.object(self.connector, "record", side_effect=delayed), patch.object(batch.time, "sleep") as sleep):
+            result = batch.run(self.connector, self.config, {}, self.root, args)
+        self.assertEqual(result["counts"], {"archived": 1})
+        self.assertEqual(result["projects"][0]["archive"]["visibility_checks"], 2)
+        self.assertEqual(sum(event[0] == "upload" for event in self.connector.events), 1)
+        generate.assert_called_once()
+        sleep.assert_called_once_with(1)
+
+    def test_real_hash_mismatch_stops_replacement_and_does_not_retry_upload(self):
         plan = batch.inspect(self.connector, self.root, inspect_args())
+        args = SimpleNamespace(batch=Path(plan["batch"]), limit=None, retry_failed=False)
+        original = self.connector.download
+
+        def changed(table, record, file, path):
+            digest = original(table, record, file, path)
+            return "0" * 64 if file["file_token"].startswith("new") else digest
+
+        with (patch.object(batch, "generate", side_effect=self.make_report),
+              patch.object(batch, "setup_runtime", return_value=(self.root, {"api_key_env": "config-key"})),
+              patch.object(batch, "api_key", return_value=True),
+              patch.object(self.connector, "download", side_effect=changed), patch.object(batch.time, "sleep") as sleep):
+            result = batch.run(self.connector, self.config, {}, self.root, args)
+        self.assertEqual(result["counts"], {"archive_failed": 1})
+        self.assertIn("摘要", result["projects"][0]["reason"])
+        self.assertEqual(sum(event[0] == "upload" for event in self.connector.events), 1)
+        self.assertFalse(any(event[0] == "remove" for event in self.connector.events))
+        sleep.assert_not_called()
+
+    def test_visibility_timeout_keeps_checked_output_and_resume_only_verifies_existing_files(self):
+        plan = batch.inspect(self.connector, self.root, inspect_args(replace=False))
+        args = SimpleNamespace(batch=Path(plan["batch"]), limit=None, retry_failed=False)
+        original = self.connector.record
+
+        def hidden(*arguments):
+            row = original(*arguments)
+            return {**row, "fldArchive": [file for file in row["fldArchive"] if not file["file_token"].startswith("new")]}
+
+        with (patch.object(batch, "generate", side_effect=self.make_report) as generate,
+              patch.object(batch, "setup_runtime", return_value=(self.root, {"api_key_env": "config-key"})),
+              patch.object(batch, "api_key", return_value=True), patch.object(batch.time, "sleep") as sleep):
+            with patch.object(self.connector, "record", side_effect=hidden):
+                result = batch.run(self.connector, self.config, {}, self.root, args)
+            self.assertEqual(result["counts"], {"archive_failed": 1})
+            self.assertTrue(Path(result["projects"][0]["receipt"]).is_file())
+            self.assertEqual(sleep.call_count, 2)
+            result = batch.run(self.connector, self.config, {}, self.root, args)
+            self.assertEqual(result["counts"], {"archived": 1})
+            generate.assert_called_once()
+        self.assertEqual(sum(event[0] == "upload" for event in self.connector.events), 1)
+
+    def test_first_rows_use_the_only_view_and_multiple_views_require_a_choice(self):
+        table = self.connector.resolve(None, None)
+        table["view_id"] = None
+        with (patch.object(self.connector, "resolve", return_value=table),
+              patch.object(self.connector, "ordered_view", return_value="vewOnly", create=True) as choose,
+              patch.object(self.connector, "records", wraps=self.connector.records) as records):
+            result = batch.inspect(self.connector, self.root, inspect_args(first=1, count=None))
+        self.assertEqual(result["total"], 1)
+        choose.assert_called_once_with(table)
+        self.assertEqual(records.call_args.args[-1], "vewOnly")
+        connector = Connector.__new__(Connector)
+        with patch.object(connector, "table_call", return_value={"views": [
+                {"id": "vewOnly", "name": "唯一视图"}]}):
+            self.assertEqual(connector.ordered_view(table), "vewOnly")
+        with patch.object(connector, "table_call", return_value={"views": [
+                {"id": "vewOne", "name": "视图一"}, {"id": "vewTwo", "name": "视图二"}]}):
+            with self.assertRaises(NeedsSelection) as caught:
+                connector.ordered_view(table)
+        self.assertEqual(caught.exception.candidates, ["视图一", "视图二"])
+
+    def test_validation_failure_stops_repeated_generation_until_runtime_changes(self):
+        plan = batch.inspect(self.connector, self.root, inspect_args(mode="api"))
         args = SimpleNamespace(batch=Path(plan["batch"]), limit=None, retry_failed=True)
         model = {"api_key_env": "config-key"}
         failure = batch.WorkerFailure("正文检查未通过", self.root / "attempt",

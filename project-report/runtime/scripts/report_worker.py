@@ -201,8 +201,10 @@ def run(manifest_path):
         source = json.loads((review.RUN / 'sources' / (pid + '.json')).read_text())
         errors = review_check.check_report(report, md, source, ROOT)
         if errors:
-            review.write_json(folder / 'artifact-errors.json', {'review': errors})
-            raise ValueError('履约报告未通过原文与结构完整性检查，已保留原报告附件。')
+            feedback_file = folder / 'artifact-errors.json'
+            review.write_json(feedback_file, {'review': errors})
+            raise contract.ReportValidationError('履约报告未通过原文与结构完整性检查，已保留原报告附件。',
+                                                 stage='review/artifacts', feedback_file=feedback_file)
         reports['review'] = report; checks['review'] = {'passed': True}
         # Each published job owns an immutable JSON snapshot. Future retries
         # may update the working cache without invalidating prior reports.
@@ -270,8 +272,10 @@ def run(manifest_path):
         report = reports['achievement']; md = achievement.render(report)
         errors = achievement_check.check(report, md, ROOT, require_paired='review' in reports)
         if errors:
-            review.write_json(folder / 'artifact-errors.json', {'achievement': errors})
-            raise ValueError('成果报告未通过事实与原文完整性检查，已保留原报告附件。')
+            feedback_file = folder / 'artifact-errors.json'
+            review.write_json(feedback_file, {'achievement': errors})
+            raise contract.ReportValidationError('成果报告未通过事实与原文完整性检查，已保留原报告附件。',
+                                                 stage='achievement/artifacts', feedback_file=feedback_file)
         checks['achievement'] = {'passed': True}
         path = ROOT / files['achievement']['path']
         snapshot = folder / 'reports/achievement' / path.name

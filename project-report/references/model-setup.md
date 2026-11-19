@@ -1,45 +1,33 @@
-# 个人报告模型配置
+# 默认模型与可选 API 配置
 
-先按 [独立运行与初始化](report-runtime.md) 完成首次环境准备。手动配置和对话配置都作用于鲸研的报告模型。
+## 默认：WorkBuddy 当前会话模型
 
-## 在技能目录手动配置
+鲸研默认不需要配置报告 API。用户在 WorkBuddy 选择内置积分模型或自定义模型，选中「鲸研项目报告」并说明任务即可。两者都使用相同的宿主执行流程，计费由 WorkBuddy 和所选模型服务方按正常规则处理。
 
-在实际导入的 `project-report` 目录中，将 `config/model.example.json` 复制为 `config/model.local.json`。如果 WorkBuddy 把 Skill 安装到另一份目录，以 `init` 回执里的 `manual_model_config` 路径为准。用记事本或 VS Code 打开个人配置，填写这三项。
+默认流程不读取 Skill 的 model.local.json、密钥文件或 WorkBuddy 的 models.json。即使旧 API 配置存在或格式有误，也不会自动启用。模型生成内容由当前会话完成，脚本负责材料解析、原文/数字/结构检查、Word 导出及飞书归档。具体协议见 [宿主执行](host-workflow.md)。
 
-```json
-{
-  "api_base": "https://api.deepseek.com",
-  "model": "deepseek-flash",
-  "api_key": "在本机粘贴实际密钥"
-}
-```
+## 可选：独立 API 模式
 
-`api_base` 可填 API 基础地址，也可填以 `/chat/completions` 结尾的完整接口地址。按供应商的文档填写接口使用的模型 ID。自定义网关需要支持 OpenAI Chat Completions 接口及 JSON 输出模式。远端地址使用 HTTPS。
+用户明确说「用 Skill 中单独配置的 API 生成报告」时，才在初次命令加 --mode api。宿主仍负责执行工具，报告正文由独立 API 链路生成；该 API 按对应平台规则另行计费。脚本不能提取 WorkBuddy 内置模型的订阅凭据来调用 API。宿主模式失败时不得自动切换本模式。
 
-保存后下一次执行即会使用新值。可对 WorkBuddy 说「使用鲸研，检查我的报告模型连接」，或在技能目录中直接执行以下命令。
+在实际导入的 Skill 目录，将 config/model.example.json 复制为 config/model.local.json，用户在本机填写：
 
-```powershell
-& .\scripts\run.ps1 check-model
-```
+    {
+      "api_base": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "api_key": "在本机填写实际密钥"
+    }
 
-```bash
-sh scripts/run.sh check-model
-```
+api_base 使用供应商的 OpenAI Chat Completions 基础地址或以 /chat/completions 结尾的完整地址；远端使用 HTTPS。模型名填 API 所需 ID。个人文件和密钥不会进入发布包。
 
-`check-model` 发送一条验证请求，输出接口是否可用、模型和当前配置文件路径。`doctor` 仅检查本机配置。让用户自己编辑 `model.local.json`，由脚本读取密钥。宿主工具不得用读取文件或 shell 命令打印该文件、`.env` 和凭据文件，也不要在故障排查时拼接完整配置到日志。用上述检查命令取得状态即可。保留发布模板中的空密钥。Git 和发布脚本会排除个人配置，分享 Skill 时使用生成的发布包。
+只在配置独立 API 后，使用 scripts/run.sh check-model（Windows 对应 scripts/run.ps1）验证它。验证区分余额、密钥、权限、限流、TLS、格式及连接错误，不打印平台原始响应；仅格式错误最多补试一次，等待有上限。check-model 不是检查 WorkBuddy 内置模型的方法，默认模式不执行它。
 
-## 通过 WorkBuddy 对话配置
+本地材料明确使用独立 API 的命令为 generate --mode api；飞书任务为 feishu deliver --mode api，或 inspect --mode api --archive。模式会记入批次，续跑不自行改换模式。
 
-技能目录没有 `model.local.json` 时，可以说「帮我配置鲸研报告模型，用 DeepSeek Flash」。使用用户主目录中的个人配置及密钥文件。可以按用户要求创建并打开本机的私有文本文件，例如用户工作目录下 `local/待导入密钥.txt`。文件只含密钥本身，由配置脚本读取。
+## 高级配置与旧配置兼容
 
-通过运行入口调用配置工具。`$ENTRY` 为 `scripts/run.sh` 的实际路径，`$KEY_FILE` 为用户刚保存的纯密钥文件路径。Windows 对应使用 `scripts/run.ps1`。平台与模型名按用户选择填写。
+原有通过 configure --provider ... --model ... --key-file ... 保存的个人配置仍可在 API 模式使用，密钥文件在个人配置旁的 local/jingyan-model.env；也支持用户终端中的 --key-stdin 或 --key-prompt。只需手动文件时，model.local.json 支持自定义接口及模型 ID。已明确绑定 WorkBuddy 的 API 配置会保持原选择，切换独立来源时应明确配置对应平台。
 
-```bash
-sh "$ENTRY" configure --provider deepseek --model deepseek-flash --key-file "$KEY_FILE"
-```
+如果用户明确选择 API 模式、并希望复用 WorkBuddy 的自定义 API 配置，可用 configure --from-workbuddy --list 列候选，再用 configure --from-workbuddy --model '选中的模型ID或显示名称' 保存引用。脚本只保存配置路径及模型 ID，不复制密钥，每次 API 运行读取最新值。这仅适用于兼容的自定义 Chat Completions 模型，不包括内置积分模型；不会跟随会话临时切换模型。
 
-也支持 `--key-stdin` 或用户可操作的终端中的 `--key-prompt`。密钥须通过上述输入方式提供。脚本执行一次最小模型请求，验证成功后保存平台、模型与本地密钥文件路径，密钥保存在个人配置旁的 `local/jingyan-model.env`。失败保留原配置，反馈平台、模型及可操作的错误原因，输出不含密钥。
-
-对话配置的平台和模型选择由包内 `runtime/scripts/private_model_settings.py` 限定。模型名不受支持时说明限制。需要自选接口地址或模型 ID 时使用 `config/model.local.json`。配置文件存在但格式有误时，请修正提示的字段后重试。
-
-每位用户使用自己的配置和密钥文件。配置存在而凭据缺失时先处理个人配置。个人凭据只供本机模型请求使用，工作底稿、报告与发布包采用各自独立目录。
+配置、.env 和 WorkBuddy models.json 都只能由专门脚本读取。宿主不得打印、复制到会话上下文或自行写诊断请求。权限不足时请用户确认对应的读取或联网权限；原配置保留，不以放宽安全策略或不断更换工具绕过。

@@ -2,6 +2,28 @@
 $ErrorActionPreference = 'Stop'
 $ScriptRoot = $PSScriptRoot
 $DataRoot = if ($env:JINGYAN_HOME) { $env:JINGYAN_HOME } else { Join-Path $env:USERPROFILE '.jingyan' }
+if ($TaskArguments -and $TaskArguments[0] -eq 'doctor') {
+    $Candidates = @((Join-Path $DataRoot 'venv\Scripts\python.exe'), $env:JINGYAN_PYTHON)
+    foreach ($Name in @('python', 'python3')) {
+        $Found = Get-Command $Name -ErrorAction SilentlyContinue
+        if ($Found) { $Candidates += $Found.Source }
+    }
+    $Versions = Join-Path $env:USERPROFILE '.workbuddy\binaries\python\versions'
+    $Candidates += @(Get-ChildItem $Versions -Filter python.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+    foreach ($Probe in $Candidates) {
+        if ($Probe) {
+            try {
+                & $Probe -c 'import sys; sys.exit(not ((3,11) <= sys.version_info[:2] < (3,14)))' 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    & $Probe -B (Join-Path $ScriptRoot 'bootstrap.py') --data-dir $DataRoot --doctor
+                    exit $LASTEXITCODE
+                }
+            } catch { }
+        }
+    }
+    Write-Output '{"status":"initialization_required","read_only":true,"core_ready":false,"ocr_ready":false,"model_setup_needed":true}'
+    exit 0
+}
 New-Item -ItemType Directory -Force $DataRoot | Out-Null
 $Python = Join-Path $DataRoot 'venv\Scripts\python.exe'
 $RuntimeReady = $false
@@ -56,16 +78,23 @@ if (-not $RuntimeReady) {
         $env:JINGYAN_UV = $Uv
         $Candidate = $Python
     }
-    & $Candidate (Join-Path $ScriptRoot 'bootstrap.py') --data-dir $DataRoot
+    $BootstrapPython = $Candidate
 } else {
-    & $Python (Join-Path $ScriptRoot 'bootstrap.py') --data-dir $DataRoot
+    $BootstrapPython = $Python
 }
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $Config = if ($env:JINGYAN_CONFIG) { $env:JINGYAN_CONFIG } else { Join-Path $DataRoot '鲸研配置.json' }
-if (-not $TaskArguments -or $TaskArguments[0] -eq 'init') { exit 0 }
+$env:JINGYAN_CONFIG = $Config
+if (-not $TaskArguments -or $TaskArguments[0] -eq 'init') {
+    $InitArgs = @($TaskArguments | Select-Object -Skip 1)
+    & $BootstrapPython (Join-Path $ScriptRoot 'bootstrap.py') --data-dir $DataRoot @InitArgs
+    exit $LASTEXITCODE
+}
+& $BootstrapPython (Join-Path $ScriptRoot 'bootstrap.py') --data-dir $DataRoot
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $Action = $TaskArguments[0]
 $Remaining = @($TaskArguments | Select-Object -Skip 1)
 switch ($Action) {
+    'host-task' { & $Python (Join-Path $ScriptRoot 'host_task.py') --config $Config @Remaining }
     'configure' { & $Python (Join-Path $ScriptRoot 'model_setup.py') --config $Config @Remaining }
     'reexport' { & $Python (Join-Path $ScriptRoot 'reexport_checked.py') --config $Config @Remaining }
     'plan-batch' { & $Python (Join-Path $ScriptRoot 'plan_batch.py') @Remaining }

@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 
 from read_docx import extract, file_hash, inside
+from host_protocol import HostTaskPending
+from host_tasks import pending_result
 
 
 class WorkerFailure(ValueError):
@@ -27,12 +29,17 @@ class WorkerFailure(ValueError):
         self.validation_file = validation_file
 
     def details(self):
+        actions = {"model_balance": "请在模型平台充值或更换已配置模型，再从原批次继续。",
+                   "model_authentication": "请在模型设置中核对密钥，再从原批次继续。",
+                   "model_forbidden": "请核对模型访问权限，再从原批次继续。",
+                   "model_tls": "请检查网络及接口证书配置。",
+                   "model_response_format": "请将错误码和诊断目录交给维护人员检查模型接口格式。"}
         return {"diagnostics": str(self.directory), "error_code": self.error_code,
                 "retryable": self.retryable,
                 **({"validation_stage": self.validation_stage} if self.validation_stage else {}),
                 **({"validation_file": str(self.validation_file)} if self.validation_file else {}),
-                "next_action": ("临时连接或等待失败，可用原批次重试一次。" if self.retryable else
-                                "本项目已停止。将错误码和诊断目录交给维护人员，修复后继续。")}
+                "next_action": actions.get(self.error_code, "临时连接或等待失败，可用原批次重试一次。" if self.retryable else
+                                           "本项目已停止。将错误码和诊断目录交给维护人员，修复后继续。")}
 
 
 def worker_failure(directory, error):
@@ -43,12 +50,24 @@ def worker_failure(directory, error):
         detail = load_json(directory / "worker-failure.json")
         error_type, message = detail.get("type", detail.get("error_type", "")), str(detail.get("message") or "")
     except (OSError, ValueError, AttributeError):
-        error_type, message = "", ""
+        error_type, message, detail = "", "", {}
+    if error_type == "ModelRequestError":
+        category = detail.get("model_category")
+        if category not in {"balance", "authentication", "forbidden", "rate_limit", "server", "tls", "timeout", "connection", "response_format", "http"}:
+            category = "http"
+        labels = {"balance": "模型账号余额不足，请充值或更换模型。", "authentication": "模型密钥验证失败，请核对设置。",
+                  "forbidden": "当前账号无模型访问权限。", "response_format": "模型响应格式不完整或不兼容。",
+                  "tls": "模型接口的安全连接验证失败。"}
+        return WorkerFailure(labels.get(category, "模型请求未完成，已保留材料和完成步骤。"), directory,
+                             error_code="model_" + category,
+                             retryable=category in {"rate_limit", "server", "timeout", "connection"})
     if error_type in {"ValueError", "ReportValidationError"}:
         stage_messages = {
             "review/initial": "履约报告初稿未通过正文或成果认定口径检查。",
             "review/final": "履约报告最终综合意见、确认话术或依据用途检查未通过。",
+            "review/artifacts": "履约报告最终文件的来源绑定或结构检查未通过。",
             "achievement/facts": "成果报告部分表述未通过事实或来源检查。",
+            "achievement/artifacts": "成果报告最终文件的事实绑定或结构检查未通过。",
         }
         stage = detail.get("validation_stage")
         feedback_file = detail.get("validation_file")
@@ -82,7 +101,8 @@ def setup_runtime(config_file, config, use_credentials=True):
     scripts = root / "scripts"
     sys.path.insert(0, str(scripts))
     from llm_runtime import model_config
-    from model_setup import load_credentials, manual_model_options
+    from model_setup import credential_path, load_credentials, manual_model_options
+    from workbuddy_models import model_file, model_options as workbuddy_options
     from private_model_settings import PROVIDERS, _supported
 
     ocr_engine = runtime.get("ocr_engine")
@@ -91,9 +111,16 @@ def setup_runtime(config_file, config, use_credentials=True):
             raise ValueError("OCR 引擎应为 vision 或 rapidocr。")
         os.environ["PROJECT_ASSISTANT_OCR_ENGINE"] = ocr_engine
 
+    source = runtime.get("model_source", "auto")
+    if source not in {"auto", "workbuddy", "configured"}:
+        raise ValueError("模型来源应为 auto、workbuddy 或 configured。")
+    if source == "workbuddy":
+        return root, {**model_config(), **workbuddy_options(runtime, PROVIDERS, use_credentials)}
     manual = manual_model_options(PROVIDERS, use_credentials)
     if manual is not None:
-        return root, {**model_config(), **manual}
+        return root, {**model_config(), **manual, "model_source": "manual"}
+    if source == "auto" and not credential_path(config_file, runtime).is_file() and model_file() is not None:
+        return root, {**model_config(), **workbuddy_options(runtime, PROVIDERS, use_credentials)}
 
     provider = runtime.get("provider")
     model = runtime.get("model")
@@ -101,10 +128,24 @@ def setup_runtime(config_file, config, use_credentials=True):
         raise ValueError("请在鲸研配置中指定受支持的报告模型平台和模型。")
     _, endpoint, key_env, _ = PROVIDERS[provider]
     model_options = {**model_config(), "provider": provider, "api_base": endpoint,
-                     "api_key_env": key_env, "text_model": model}
+                     "api_key_env": key_env, "text_model": model, "model_source": "configured"}
     if use_credentials:
         load_credentials(config_file, runtime, key_env)
     return root, model_options
+
+
+def setup_host_runtime(config_file, config):
+    """Prepare parsers/rules only, with no model config or credential lookup."""
+    from runtime_support import prepare_runtime
+    root = prepare_runtime(workspace(config_file, config))
+    sys.path.insert(0, str(root / "scripts"))
+    runtime = config.get("report_runtime")
+    engine = runtime.get("ocr_engine", "rapidocr") if isinstance(runtime, dict) else "rapidocr"
+    if engine not in {"rapidocr", "vision"}:
+        raise ValueError("OCR 引擎应为 rapidocr 或 vision。")
+    os.environ["PROJECT_ASSISTANT_OCR_ENGINE"] = engine
+    return root, {"execution_mode": "host", "model_source": "host", "provider": "host",
+                  "text_model": "WorkBuddy 当前会话模型"}
 
 
 def source_path(run_dir, relative_input, role, config):
@@ -127,6 +168,7 @@ def read_material(run_dir, path, role):
     validate_document(path, path.suffix.lower())
     if path.suffix.lower() == ".docx":
         return extract(run_dir, path.relative_to(run_dir), role)
+    ensure_pdf_ocr(path)
     from pdf_ocr import read_pdf_pages
 
     digest = file_hash(path)
@@ -143,6 +185,29 @@ def read_material(run_dir, path, role):
         for index, content in enumerate(pages, 1)
     ]})
     return summary
+
+
+def ensure_pdf_ocr(path):
+    """Install the optional local OCR profile only for pages needing OCR."""
+    from pdf_ocr import backend_name, capabilities, inspect_pdf
+
+    _, needed = inspect_pdf(path)
+    if not needed or backend_name() != "rapidocr" or capabilities()["available"]:
+        return
+    from bootstrap import EnvironmentSetupError, initialize
+    environment = Path(sys.prefix)
+    if environment.name != "venv" or sys.prefix == sys.base_prefix:
+        raise EnvironmentSetupError("扫描 PDF 需要 OCR 组件，请用技能入口执行 init --ocr 后继续。",
+                                    "ocr_initialization_required", "install_ocr")
+    print(json.dumps({"step": "首次准备扫描 PDF 识别组件，后续复用", "ocr_pages": len(needed)},
+                     ensure_ascii=False), file=sys.stderr, flush=True)
+    initialize(environment.parent, profile="ocr")
+    import importlib
+    importlib.invalidate_caches()
+    ready = capabilities()
+    if not ready["available"]:
+        raise EnvironmentSetupError("OCR 组件尚未就绪，请将初始化记录交给维护人员。",
+                                    "ocr_initialization_failed", "install_ocr")
 
 
 def snapshot_inputs(work, paths, hashes):
@@ -196,6 +261,9 @@ def exclusive_work(work):
 
 
 def generate(args, root, run_dir, config, model):
+    if model.get("execution_mode") == "host":
+        from host_reports import advance
+        return advance(args, root, run_dir, config)
     from report_worker import pipeline_fingerprint
     from feishu_report_bundle import REPORT_TITLES
     from reading_copy import compose
@@ -217,6 +285,8 @@ def generate(args, root, run_dir, config, model):
         raise ValueError("材料合计超过项目大小限制。")
     for path in paths.values():
         validate_document(path, path.suffix.lower())
+        if path.suffix.lower() == ".pdf":
+            ensure_pdf_ocr(path)
     if not api_key(model["api_key_env"]):
         raise ValueError(f"本地报告模型缺少 {model['api_key_env']}，请在运行库配置后重试。")
     hashes = {role: file_hash(path) for role, path in paths.items()}
@@ -294,28 +364,37 @@ def main():
     build.add_argument("--types", required=True, nargs="+", choices=("review", "achievement", "forecast"))
     build.add_argument("--project-name")
     build.add_argument("--record-id")
+    build.add_argument("--mode", choices=("host", "api"), default="host",
+                       help="默认使用宿主会话模型；仅明确选择 api 时读取独立模型配置")
+    build.add_argument("--response", type=Path, help="宿主按待办写好的 JSON 响应文件")
     for command in (read, build):
         command.add_argument("--run-dir", required=True, type=Path)
     args = parser.parse_args()
     try:
-        config_file = args.config.resolve(strict=True)
+        config_file = args.config.expanduser().resolve(strict=args.command != "doctor")
+        os.environ["JINGYAN_CONFIG"] = str(config_file)
+        if args.command == "doctor":
+            from bootstrap import diagnose
+            directory = Path(os.environ.get("JINGYAN_HOME", Path(sys.prefix).parent if Path(sys.prefix).name == "venv" else Path.home() / ".jingyan"))
+            print(json.dumps(diagnose(directory), ensure_ascii=False))
+            return 0
         config = load_json(config_file)
-        root, model = setup_runtime(config_file, config)
-        if args.command in {"doctor", "check-model"}:
+        use_api = args.command == "check-model" or args.command == "generate" and args.mode == "api"
+        if args.command == "generate" and args.mode == "api" and args.response:
+            raise ValueError("API 模式不接收宿主响应文件。")
+        root, model = setup_runtime(config_file, config) if use_api else setup_host_runtime(config_file, config)
+        if args.command == "check-model":
             from model_setup import LOCAL_MODEL_CONFIG, verify_connection
             from review_common import api_key
 
             key = api_key(model["api_key_env"])
-            active_config = LOCAL_MODEL_CONFIG if model.get("manual_endpoint") else config_file
+            active_config = model.get("model_config_file") or (LOCAL_MODEL_CONFIG if model.get("manual_endpoint") else config_file)
             result = {"status": "ready" if key else "model_key_missing", "model": model["text_model"],
-                      "provider": model["provider"], "model_config_file": str(active_config)}
-            if args.command == "check-model" and key:
+                      "provider": model["provider"], "model_config_file": str(active_config),
+                      "model_source": model["model_source"]}
+            if key:
                 verify_connection(model, key)
                 result["connection_verified"] = True
-            if args.command == "doctor":
-                from pdf_ocr import capabilities
-
-                result.update(ocr=capabilities(), engine=str(root), output_format="docx")
         else:
             workspace_root = workspace(config_file, config)
             run_dir = inside(args.run_dir, workspace_root)
@@ -325,10 +404,24 @@ def main():
                 path = source_path(run_dir, args.input, args.role, config)
                 result = read_material(run_dir, path, args.role)
             else:
+                args.continuation = {"kind": "local", "config_file": str(config_file), "run_dir": str(run_dir),
+                                     "taskbook": args.taskbook, "report": args.report, "types": args.types,
+                                     "project_name": args.project_name, "record_id": args.record_id}
                 result = generate(args, root, run_dir, config, model)
+    except HostTaskPending as pending:
+        model_task = pending.task
+        resume = ["generate", "--run-dir", str(args.run_dir), "--taskbook", args.taskbook,
+                  "--types", *args.types, "--response", model_task["response_file"]]
+        for flag, value in (("--report", args.report), ("--project-name", args.project_name), ("--record-id", args.record_id)):
+            if value:
+                resume += [flag, value]
+        print(json.dumps(pending_result(model_task, resume), ensure_ascii=False))
+        return 0
     except (OSError, ValueError, KeyError, ImportError, RuntimeError, TypeError, SyntaxError) as error:
         detail = {"status": "failed", "error": str(error)}
         if isinstance(error, WorkerFailure):
+            detail.update(error.details())
+        elif callable(getattr(error, "details", None)):
             detail.update(error.details())
         print(json.dumps(detail, ensure_ascii=False))
         return 2

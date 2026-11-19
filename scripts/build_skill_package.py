@@ -23,7 +23,12 @@ def build():
                     raise ValueError("发布包源文件不使用符号链接。")
                 package.write(path, path.relative_to(ROOT))
     with ZipFile(temporary) as package:
-        required = {"project-report/SKILL.md", "project-report/requirements.lock", "project-report/scripts/run.sh",
+        required = {"project-report/SKILL.md", "project-report/requirements.lock", "project-report/requirements-ocr.lock",
+                    "project-report/scripts/workbuddy_models.py", "project-report/scripts/run.sh",
+                    "project-report/scripts/host_reports.py", "project-report/scripts/host_content.py",
+                    "project-report/scripts/host_materials.py", "project-report/scripts/host_prompts.py",
+                    "project-report/scripts/host_protocol.py", "project-report/references/host-workflow.md",
+                    "project-report/scripts/host_task.py", "project-report/scripts/host_tasks.py",
                     "project-report/scripts/run.ps1", "project-report/scripts/feishu_batch.py",
                     "project-report/scripts/feishu_connector.py", "project-report/runtime/scripts/report_worker.py",
                     "project-report/templates/document-layout.json", "project-report/config/model.example.json"}

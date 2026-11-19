@@ -9,7 +9,7 @@ import tempfile
 import time
 import uuid
 
-from local_reports import checked_reports, load_json, setup_runtime, source_path, workspace
+from local_reports import checked_reports, load_json, setup_runtime, setup_host_runtime, source_path, workspace
 from read_docx import file_hash, inside
 
 
@@ -17,7 +17,6 @@ def reexport(args):
     started = time.monotonic()
     config_file = args.config.resolve(strict=True)
     config = load_json(config_file)
-    root, _ = setup_runtime(config_file, config, use_credentials=False)
     run_dir = inside(args.run_dir, workspace(config_file, config))
     receipt_path = inside(args.receipt, run_dir / "reports")
     previous = load_json(receipt_path)
@@ -29,6 +28,11 @@ def reexport(args):
     hashes = {role: file_hash(path) for role, path in paths.items()}
     if hashes != previous.get("material_hashes"):
         raise ValueError("材料已变化，请重新生成，不能沿用旧结论导出。")
+    if previous.get("execution_mode") == "host":
+        setup_host_runtime(config_file, config)
+        from host_reports import reexport as host_reexport
+        return host_reexport(previous, run_dir, paths)
+    root, _ = setup_runtime(config_file, config, use_credentials=False)
 
     from report_worker import pipeline_fingerprint
     from feishu_report_bundle import REPORT_TITLES

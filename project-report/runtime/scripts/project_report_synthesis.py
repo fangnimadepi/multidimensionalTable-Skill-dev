@@ -10,7 +10,7 @@ import project_report_presentation as p
 import project_report_assurance as a
 import project_report_findings as f
 
-VERSION = 'project-report-synthesis-v0.8.1'
+VERSION = 'project-report-synthesis-v0.8.2'
 
 
 def context_for(report, source, records):
@@ -192,6 +192,14 @@ def patent_disclosure_used_as_filing_result(text, context):
     return not actual_filing
 
 
+def unsupported_completion_claim(text):
+    claims = p.asserted_completion_text(p.without_queried_completion(text))
+    return a.forbidden_claim(claims) or bool(re.search(
+        r'本期[^，,。；;：:\n]{0,8}[一二三四五六七八九十\d]+项[^，,。；;：:\n]{0,14}(?:均已完成|均对应|全部完成)'
+        r'|(?:所有|全部|各项)(?:本期|中期|阶段|计划|考核|项目)?(?:任务|指标|目标|工作|要求)'
+        r'[^，,。；;：:\n]{0,8}(?:完成|达标)', claims))
+
+
 def validate(draft, audit, context):
     errors, warnings = [], []
     paragraphs = draft.get('paragraphs', [])
@@ -262,11 +270,7 @@ def validate(draft, audit, context):
         # shared technical names and a brief key question are legitimate.
         if re.search(r'(.{8,32}?)\1', text):
             errors.append('repeated_phrase_in_conclusion')
-        claims = p.asserted_completion_text(p.without_queried_completion(text))
-        if a.forbidden_claim(claims) or re.search(
-                r'本期[^，,。；;：:\n]{0,8}[一二三四五六七八九十\d]+项[^，,。；;：:\n]{0,14}(?:均已完成|均对应|全部完成)'
-                r'|(?:所有|全部|各项)(?:本期|中期|阶段|计划|考核|项目)?(?:任务|指标|目标|工作|要求)'
-                r'[^，,。；;：:\n]{0,8}(?:完成|达标)', claims):
+        if unsupported_completion_claim(text):
             errors.append('unsupported_whole_project_conclusion')
         if re.search(r'核对条目|本期检查的|未拆解|校验降级|模型输出|C\d{3}|R-(?:PDF|T\d|P\d)|P-T\d', text):
             errors.append('internal_jargon_in_conclusion')

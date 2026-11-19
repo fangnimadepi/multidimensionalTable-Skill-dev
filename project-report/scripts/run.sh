@@ -3,6 +3,16 @@
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DATA_DIR=${JINGYAN_HOME:-"$HOME/.jingyan"}
+# doctor must be read-only, including on a machine with no initialized venv.
+if [ "${1:-}" = "doctor" ]; then
+    for probe in "$DATA_DIR/venv/bin/python" "${JINGYAN_PYTHON:-}" python3 python "$HOME"/.workbuddy/binaries/python/versions/*/bin/python3; do
+        if [ -n "$probe" ] && command -v "$probe" >/dev/null 2>&1 && "$probe" -c 'import sys; sys.exit(not ((3,11) <= sys.version_info[:2] < (3,14)))' >/dev/null 2>&1; then
+            exec "$probe" -B "$SCRIPT_DIR/bootstrap.py" --data-dir "$DATA_DIR" --doctor
+        fi
+    done
+    echo '{"status":"initialization_required","read_only":true,"core_ready":false,"ocr_ready":false,"model_setup_needed":true}'
+    exit 0
+fi
 mkdir -p "$DATA_DIR"
 PYTHON="$DATA_DIR/venv/bin/python"
 if [ ! -x "$PYTHON" ] || ! "$PYTHON" -c 'import sys; sys.exit(not ((3,11) <= sys.version_info[:2] < (3,14)))' >/dev/null 2>&1; then
@@ -46,15 +56,19 @@ if [ ! -x "$PYTHON" ] || ! "$PYTHON" -c 'import sys; sys.exit(not ((3,11) <= sys
         export JINGYAN_UV="$UV"
         CANDIDATE="$DATA_DIR/venv/bin/python"
     fi
-    "$CANDIDATE" "$SCRIPT_DIR/bootstrap.py" --data-dir "$DATA_DIR" >&2
+    BOOTSTRAP_PYTHON=$CANDIDATE
 else
-    "$PYTHON" "$SCRIPT_DIR/bootstrap.py" --data-dir "$DATA_DIR" >&2
+    BOOTSTRAP_PYTHON=$PYTHON
 fi
 CONFIG=${JINGYAN_CONFIG:-"$DATA_DIR/鲸研配置.json"}
+export JINGYAN_CONFIG="$CONFIG"
 if [ "$#" -eq 0 ] || [ "$1" = "init" ]; then
-    exec "$PYTHON" "$SCRIPT_DIR/bootstrap.py" --data-dir "$DATA_DIR"
+    if [ "$#" -gt 0 ]; then shift; fi
+    exec "$BOOTSTRAP_PYTHON" "$SCRIPT_DIR/bootstrap.py" --data-dir "$DATA_DIR" "$@"
 fi
+"$BOOTSTRAP_PYTHON" "$SCRIPT_DIR/bootstrap.py" --data-dir "$DATA_DIR" >&2
 case "$1" in
+    host-task) shift; exec "$PYTHON" "$SCRIPT_DIR/host_task.py" --config "$CONFIG" "$@" ;;
     configure) shift; exec "$PYTHON" "$SCRIPT_DIR/model_setup.py" --config "$CONFIG" "$@" ;;
     reexport) shift; exec "$PYTHON" "$SCRIPT_DIR/reexport_checked.py" --config "$CONFIG" "$@" ;;
     plan-batch) shift; exec "$PYTHON" "$SCRIPT_DIR/plan_batch.py" "$@" ;;
