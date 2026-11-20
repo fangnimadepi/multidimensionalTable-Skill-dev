@@ -5,7 +5,7 @@ display_name_en: Research Project Reports
 description: 根据项目任务书和阶段总结报告生成履约审查、阶段成果与后续推进分析，或根据任务书生成预期成果分析。支持本地材料和飞书多维表格取材及归档。
 description_zh: 读项目材料、生成履约审查和成果分析，并将飞书项目的报告归档到原记录。
 description_en: Review project progress, explain outcomes, and archive Feishu project reports to the original record.
-version: 0.5.1
+version: 0.5.2
 author: fangnimadepi
 examples_zh:
   - 根据附件中的任务书和中期总结报告，生成履约审查和成果分析。

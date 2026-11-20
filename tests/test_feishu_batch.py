@@ -209,6 +209,16 @@ class FeishuBatchTests(unittest.TestCase):
         with self.assertRaises(NeedsSelection):
             batch.choose_projects(rows, inspect_args(project=["test0"]), None)
 
+    def test_project_spacing_is_normalized_without_guessing_ambiguous_projects(self):
+        rows = [{"record_id": "recSpaced", "project_name": "某老师        等离子体研究"},
+                {"record_id": "recOther", "project_name": "某老师 等离子体研究续项"}]
+        args = inspect_args(project=["某老师 等离子体研究"])
+        self.assertEqual(batch.choose_projects(rows, args, None), rows[:1])
+        rows.append({"record_id": "recAmbiguous", "project_name": "某老师\u3000 等离子体研究"})
+        with self.assertRaises(NeedsSelection):
+            batch.choose_projects(rows, args, None)
+        self.assertEqual(batch.choose_projects(rows, inspect_args(project=[rows[0]["project_name"]]), None), rows[:1])
+
     def test_missing_archive_column_does_not_plan_a_local_only_delivery(self):
         with patch.object(self.connector, "fields", return_value=FIELDS[:3]):
             with self.assertRaisesRegex(NeedsSelection, "未找到明确的归档附件列"):

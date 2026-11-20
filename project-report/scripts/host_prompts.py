@@ -18,7 +18,7 @@ REVIEW_SHAPE = {
     "overview": [UNIT], "plan_summary": [{**UNIT, "kind": "计划"}],
     "progress_summary": [{**UNIT, "kind": "事实"}],
     "comparisons": [{"item_id": "本次一个 P- 编号", "fact_ids": [], "status": "待确认",
-                     "progress": "", "judgement": "对照判断；未说明不能写为未做"}],
+                     "progress_kind": "事实", "progress": "", "judgement": "对照判断；未说明不能写为未做"}],
     "findings": [{"category": "交付内容与技术规格差异", "title": UNIT,
                   "requirement": {**UNIT, "kind": "计划"}, "progress": {**UNIT, "kind": "事实"}, "difference": UNIT}],
     "conclusion": [UNIT, UNIT], "pi_questions": [{**UNIT, "kind": "建议"}], "manager_notes": [],
@@ -38,6 +38,7 @@ COMMON = """你正在执行鲸研的一个固定阶段。请使用当前会话�
 只写本次项目；不要混入其他项目。按 response_file 写一个 UTF-8 JSON 对象，外层为 request_id 和 result。
 结构示例用于说明字段，不能把示例文字或占位编号作为结果。数组按实际需要填写，空项用空数组；不要省略必需字段。
 填写 response_template 的结构，用文件写入工具写到 response_file，然后执行 submit_command（校验、提交和续跑合为一次）。
+如果文件读取工具提示截断，按行分段读完当前任务文件；不要改读内部 request 文件或现场编写提取程序。
 不要阅读技能实现源码、导入 Python 模块、自建校验器、编写临时脚本或调试正则。无需逐字复写或自行查找原文片段。
 不要自己渲染 Word 或手动上传附件。反馈若无法修正，按返回的停止状态汇报，不研究检查器来凑通过。
 不能把“已完成测试数量”当作通过率，8B 验证不能当作 32B 验证，评测集不能当作训练数据集；
@@ -85,7 +86,9 @@ kind 为事实/计划/分析/建议/示意。实际进展用事实，必须引�
 comparisons 逐一登记全部 plan_items：状态为满足/部分完成/尚未完成/待确认/后续节点/总体参考；
 明确判断必须有当前事实，要求包含报告、源码等多项交付时，不能仅凭其中一项已交付就标满足。同一对象、规格、阶段、单位、测评条件确认可比才比较；不确定则待确认。
 未知项放在确认话术，不拼进可比进展表。总体/后续条件保持骨架中的总体参考/后续节点，允许记录其当前进度，不当作本期达标或未达；程序会固定这一范围并保留进度标签。不要凭默认审查日期断言逾期。
+区分“当前实际成果”和“报告如何表述计划”。后续节点若只有下一步安排，可将 progress_kind 设为“材料表述”，fact_ids 引用报告的后续计划，progress 明确写“报告计划下一阶段……”，保持后续节点/总体参考或待确认；不能同时标满足、部分完成或尚未完成。无相关内容则 progress 留空、fact_ids 留空，不强凑已完成事实。
 findings 只列需要经理人与 PI 对接的事项；无则空数组。分类按业务规则，依次有任务书要求、报告完成情况、出入情况。
+对报告所述计划时间、目标口径等文字出入，findings.progress 的 kind 用“材料表述”，只引用报告中确实写了该内容的 facts；输出标签为“报告所述”。不必添加无关的已完成成果凑校验。其他实际完成情况仍用 kind=事实。材料表述不用于实际进展总结、成果认定或卡片。
 综合审查意见一至两段：先结合实质进展与关键出入给出判断，再按需补充成果认定口径，不重复完整问题清单。
 pi_questions 用经理人可直接发给 PI 的完整自然话术，例如“想和您确认一下……”，不要编号或列提纲。
 可把相关待确认条件合并到少量话术段落，但其 plan_ids 必须覆盖 comparisons 中全部“待确认”的 item_id，不能只在文字中提到却漏绑编号。
@@ -111,9 +114,9 @@ checks 对每个给定 claim_id 恰好返回一次 supported 布尔值，问题�
 不能为了交付而改为通过。其他全局布尔项反映整体情况；issues 仅列事实、阶段、遗漏条件或两稿矛盾等实质问题，
 写具体 path 和问题，没问题用空数组。文风、少量重复或长短建议放 editorial_notes，readable_and_complete 仅作编辑建议，
 不因风格偏好否定有来源的事实。不要重写成稿。"""
-        shape = {"checks": [{"claim_id": "本批一个 C-编号", "supported": True, "reason": ""}],
-                 "plan_coverage_ok": True, "stage_scope_ok": True, "readable_and_complete": True,
-                 "cross_report_consistent": True, "issues": [], "editorial_notes": []}
+        shape = {"checks": [{"claim_id": "本批一个 C-编号", "supported": None, "reason": ""}],
+                 "plan_coverage_ok": None, "stage_scope_ok": None, "readable_and_complete": None,
+                 "cross_report_consistent": None, "issues": [], "editorial_notes": []}
     rules = [item["text"] for item in policy()["rules"]]
     guides = {}
     if stage == "draft":

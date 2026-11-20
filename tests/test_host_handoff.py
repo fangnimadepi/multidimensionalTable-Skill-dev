@@ -15,9 +15,9 @@ sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "runtime/scripts")]
 import host_reports
 import host_task
 from host_protocol import HostTaskPending, HostReportFailure
-from host_content import validate_facts, validate_draft, normalize_draft
+from host_content import validate_facts, validate_draft, normalize_draft, render
 from host_materials import catalog, compact_source, batches
-from host_tasks import command
+from host_tasks import command, repair_details
 from host_fixtures import documents, reply
 from test_host_feishu import NativeConnector, options
 import feishu_batch
@@ -100,6 +100,24 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("submit", text)
         self.assertIn(request["sources"][0]["source_id"], text)
         self.assertNotIn("next_command", request["instructions"])
+
+    def test_readable_task_includes_fact_schema_and_untruncated_draft_identifiers(self):
+        task = self.pending()
+        text = Path(task["task_file"]).read_text()
+        schema = text.split("## 响应字段示例", 1)[1].split("```json", 1)[1].split("```", 1)[0]
+        example = json.loads(schema)
+        self.assertIn("requirement", example["result"]["plan_items"][0])
+        self.assertIn("kind", example["result"]["facts"][0])
+        self.answer(task)
+        result = host_task.submit(task["request_file"], self.config_file, self.config)
+        draft_task = Path(result["model_task"]["task_file"]).read_text()
+        request = json.loads(Path(result["model_task"]["request_file"]).read_text())
+        # Reproduce a host reader that caps each line, rather than merely
+        # checking that the program wrote the identifiers somewhere on disk.
+        visible = "\n".join(line[:2000] for line in draft_task.splitlines())
+        for fact in request["facts"]["facts"]:
+            self.assertIn(fact["fact_id"], visible)
+            self.assertIn(fact["text"], visible)
 
     def test_missing_response_and_repeated_polling_stop_instead_of_an_endless_wait(self):
         task = self.pending()
@@ -204,6 +222,68 @@ class HandoffTests(unittest.TestCase):
         current["scope"] = "本期"
         normalized, _ = normalize_draft(normalized, request["facts"])
         self.assertTrue(any("移出对照" in e for e in validate_draft(normalized, request["facts"], material, self.args.types)[1]))
+
+    def test_follow_up_statement_is_not_forced_to_pretend_it_is_a_current_result(self):
+        request, material, draft = self.draft_context()
+        future = draft["review"]["comparisons"][1]
+        next_fact = next(f for f in request["facts"]["facts"] if f["kind"] == "后续计划")
+        future.update(progress_kind="材料表述", fact_ids=[next_fact["fact_id"]], progress=next_fact["text"])
+        self.assertFalse(validate_draft(draft, request["facts"], material, self.args.types)[1])
+        future["progress_kind"] = "事实"
+        errors = validate_draft(draft, request["facts"], material, self.args.types)[1]
+        self.assertTrue(any("实际完成" in e for e in errors))
+        details = repair_details(errors, draft, request["facts"])
+        item = next(d for d in details if d["path"] == "review/comparisons/1/progress")
+        self.assertEqual(item["index_base"], 0)
+        self.assertEqual(item["item_id"], future["item_id"])
+        self.assertEqual(item["title"], request["facts"]["plan_items"][1]["title"])
+        self.assertEqual(item["selected_facts"][0]["kind"], "后续计划")
+        future["progress_kind"], future["status"] = "材料表述", "满足"
+        self.assertTrue(any("不能作为明确完成状态" in e for e in validate_draft(draft, request["facts"], material, self.args.types)[1]))
+        normalized, _ = normalize_draft(draft, request["facts"])
+        self.assertTrue(any("不能作为明确完成状态" in e for e in validate_draft(normalized, request["facts"], material, self.args.types)[1]))
+
+    def test_report_wording_difference_uses_its_actual_source_without_unrelated_achievements(self):
+        request, material, draft = self.draft_context()
+        next_fact = next(f for f in request["facts"]["facts"] if f["kind"] == "后续计划")
+        finding = draft["review"]["findings"][0]
+        finding["category"] = "进度与计划节点差异"
+        finding["progress"] = {"text": next_fact["text"], "kind": "材料表述", "plan_ids": [],
+                               "fact_ids": [next_fact["fact_id"]]}
+        claims, errors = validate_draft(draft, request["facts"], material, self.args.types)
+        self.assertFalse(errors)
+        text, _ = render("review", draft, request["facts"], material, "示例项目",
+                         {"plan": Path("任务书.docx"), "report": Path("阶段报告.docx")}, claims)
+        self.assertIn("**报告所述：** " + next_fact["text"], text)
+        self.assertNotIn("**报告完成情况：** " + next_fact["text"], text)
+        # Material statements cannot be relabelled as achieved progress or used
+        # to replace the current-result summary with a future target.
+        finding["progress"]["kind"] = "事实"
+        self.assertTrue(any("实际完成" in e for e in validate_draft(draft, request["facts"], material, self.args.types)[1]))
+        finding["progress"]["kind"] = "材料表述"
+        draft["review"]["progress_summary"] = [finding["progress"]]
+        self.assertTrue(any("实际成果" in e for e in validate_draft(draft, request["facts"], material, self.args.types)[1]))
+
+    def test_material_statement_still_requires_report_source_and_exact_numbers(self):
+        request, material, draft = self.draft_context()
+        next_fact = next(f for f in request["facts"]["facts"] if f["kind"] == "后续计划")
+        progress = draft["review"]["findings"][0]["progress"]
+        progress.update(text=next_fact["text"] + "包含64项测试。", kind="材料表述", plan_ids=[], fact_ids=[next_fact["fact_id"]])
+        self.assertTrue(any("64" in e for e in validate_draft(draft, request["facts"], material, self.args.types)[1]))
+        progress["text"] = next_fact["text"]
+        selected = {c if isinstance(c, str) else c["source_id"] for c in next_fact["citations"]}
+        for s in material["sources"]:
+            if s["source_id"] in selected:
+                s["side"] = "plan"
+        self.assertTrue(any("材料表述只可引用报告" in e for e in validate_draft(draft, request["facts"], material, self.args.types)[1]))
+
+    def test_malformed_response_still_produces_actionable_feedback(self):
+        request, material, draft = self.draft_context()
+        draft["review"]["comparisons"][0]["item_id"] = {"unexpected": "object"}
+        _, errors = validate_draft(draft, request["facts"], material, self.args.types)
+        details = repair_details(errors, draft, request["facts"])
+        self.assertTrue(details)
+        self.assertTrue(any("计划编号无效" in item["message"] for item in details))
 
     def test_windows_command_quotes_spaces_unicode_and_apostrophes(self):
         self.assertEqual(command(["C:\\Program Files\\python.exe", "某人's 文件.json"], windows=True),

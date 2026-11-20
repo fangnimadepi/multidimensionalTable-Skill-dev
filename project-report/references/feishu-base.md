@@ -18,6 +18,8 @@ $Entry = Join-Path $Skill 'scripts\feishu_batch.py'
 
 默认入口返回 needs_model 时，只读 model_task.task_file 和 response_template，用当前模型填写 response_file，然后执行 next_command。该命令已包含正确的解释器、批次和校验提交入口，不需要查看源码或拼接命令；continue_batch 同样执行 next_command。不要把等待宿主阶段当作失败，不要只生成本地稿就结束。完整协议见 [宿主执行](host-workflow.md)。内置模型和自定义模型使用相同方法，均不提取会话密钥。
 
+完整项目名中的连续空格按排版差异处理，规范空格后仅有一个匹配才采用；存在歧义时仍返回候选，不猜测或改写原记录。Windows 的 `&` 命令使用 PowerShell 工具执行，不混用 Bash 语法或逐字拼接中文字符。
+
 只有用户明确要求使用独立 API 时，在 deliver 或 inspect 加 --mode api；模式会写入批次，run 按该批次继续。已有 API 配置不会自动启用。
 
 直接调用 `feishu_batch.py` 时，子命令为 `deliver`、`inspect` 或 `run`。更新后可用 `& $Py $Entry --version` 确认已加载目录的版本。处理状态以退出码和 JSON 为准。`needs_model` 和 `continue_batch` 需宿主自动续跑；`needs_selection` 才需要补信息，`incomplete` 查看缺项和失败项目。批次结果含实际 Skill 版本、清点时长和各项目的下载、生成及归档时长。

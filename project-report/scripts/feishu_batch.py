@@ -108,6 +108,11 @@ def choose_projects(rows, args, record_link):
         for project in args.project:
             found = [row for row in rows if project in (row["record_id"], row["project_name"])]
             if not found:
+                # User speech and table names may contain different runs of
+                # spaces. Ignore that formatting only when the match is unique.
+                normalized = " ".join(project.split())
+                found = [row for row in rows if normalized == " ".join(row["project_name"].split())]
+            if not found:
                 found = [row for row in rows if re.match(re.escape(project) + r"\s*[:：]", row["project_name"])]
             if len(found) != 1:
                 raise NeedsSelection(f"无法唯一定位项目「{project}」，请确认项目名称。",

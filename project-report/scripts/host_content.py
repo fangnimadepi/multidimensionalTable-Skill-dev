@@ -12,7 +12,7 @@ from project_report_synthesis import unsupported_completion_claim
 
 KINDS = {"计划要求", "阶段进展", "后续计划", "前期基础", "背景说明"}
 SCOPES = {"本期", "后续", "总体", "待确认"}
-UNIT_KINDS = {"事实", "计划", "分析", "建议", "示意"}
+UNIT_KINDS = {"事实", "计划", "分析", "建议", "示意", "材料表述"}
 STATUSES = {"满足", "部分完成", "尚未完成", "待确认", "后续节点", "总体参考"}
 
 
@@ -102,8 +102,12 @@ def normalize_draft(raw, facts=None):
             expected_p = [] if field == "progress" else [row.get("item_id")]
             if set(ids_p) != set(expected_p) or ids_f != row.get("fact_ids", []):
                 errors.append(f"review/comparisons/{index}/{field}:段落来源须与本行计划和事实一致")
-            if field == "progress" and value.get("kind") != "事实" or field == "judgement" and value.get("kind") != "分析":
-                errors.append(f"review/comparisons/{index}/{field}:段落类型应为" + ("事实" if field == "progress" else "分析"))
+            if field == "progress" and (not isinstance(value.get("kind"), str) or value["kind"] not in {"事实", "材料表述"}) or field == "judgement" and value.get("kind") != "分析":
+                errors.append(f"review/comparisons/{index}/{field}:段落类型应为" + ("事实或材料表述" if field == "progress" else "分析"))
+            if field == "progress":
+                if "progress_kind" in row and row["progress_kind"] != value.get("kind"):
+                    errors.append(f"review/comparisons/{index}/progress:段落类型与本行 progress_kind 不一致")
+                row["progress_kind"] = value.get("kind")
             row[field] = value.get("text")
     for finding in result["review"].get("findings", []) if isinstance(result["review"].get("findings"), list) else []:
         if not isinstance(finding, dict):
@@ -244,6 +248,16 @@ def validate_draft(raw, facts, catalog, types):
             if (not ids_f or ids_p or not any(actual[k]["kind"] == "阶段进展" for k in ids_f)
                     or any(actual[k]["kind"] != "阶段进展" and not report_context(actual[k]) for k in ids_f)):
                 errors.append(path + ":实际完成叙述须含报告当前进展，可辅引报告背景；不能借用计划数字、目标转述、下一步或前期基础")
+        if kind == "材料表述":
+            # A report's wording about a target or next step is evidence of what
+            # the report says, not evidence that the target was achieved.
+            keys = [c if isinstance(c, str) else c["source_id"]
+                    for key in ids_f for c in actual[key]["citations"]]
+            if role != "statement":
+                errors.append(path + ":材料表述只用于报告措辞或后续安排对照，不能代替正文的实际成果")
+            if (ids_p or not ids_f or not keys or any(sources[k]["side"] != "report"
+                    or sources[k]["role"] == "proof" for k in keys)):
+                errors.append(path + ":材料表述只可引用报告正文或报告表格，不能据此认定实际完成")
         if kind == "计划" or role == "plan":
             if not ids_p or ids_f:
                 errors.append(path + ":计划叙述须引用任务书计划条件")
@@ -255,7 +269,7 @@ def validate_draft(raw, facts, catalog, types):
         # For current-result prose, only numbers explicitly extracted into its
         # selected report facts qualify. A long source unit may also contain a
         # future 32B goal alongside an actual 8B result; do not borrow that goal.
-        numeric_support = "\n".join(actual[k]["text"] for k in ids_f) if kind == "事实" or role == "actual" else "\n".join(c["quote"] for c in support)
+        numeric_support = "\n".join(actual[k]["text"] for k in ids_f) if kind in {"事实", "材料表述"} or role == "actual" else "\n".join(c["quote"] for c in support)
         if not number_support(content, numeric_support):
             errors.append(numeric_feedback(content, numeric_support, path, "数字或规格缺少所选原文支持"))
         if unsupported_completion_claim(content):
@@ -297,10 +311,17 @@ def validate_draft(raw, facts, catalog, types):
             if item["scope"] in {"本期", "待确认"} and status in {"后续节点", "总体参考"}:
                 errors.append(path + ":不能把本期或未明范围的条件移出对照")
             ids = row.get("fact_ids", [])
+            progress_kind = row.get("progress_kind", "事实")
+            if not isinstance(progress_kind, str) or progress_kind not in {"事实", "材料表述"}:
+                errors.append(path + ":progress_kind 只能是事实或材料表述")
+            if progress_kind == "材料表述" and (status in {"满足", "部分完成", "尚未完成"}
+                    or isinstance(row.get("progress_status"), str) and row["progress_status"] in {"满足", "部分完成", "尚未完成"}):
+                errors.append(path + ":材料表述不能作为明确完成状态，需改用报告当前进展或标待确认")
             if status in {"满足", "部分完成", "尚未完成"} and not ids:
                 errors.append(path + ":明确进展判断需要报告当前事实")
             if ids:
-                unit({"text": row.get("progress"), "fact_ids": ids, "plan_ids": [], "kind": "事实"}, path + "/progress", "actual")
+                unit({"text": row.get("progress"), "fact_ids": ids, "plan_ids": [], "kind": progress_kind},
+                     path + "/progress", "actual" if progress_kind == "事实" else "statement")
             elif not isinstance(row.get("progress", ""), str):
                 errors.append(path + ":进展须为文字")
             unit({"text": row.get("judgement"), "fact_ids": ids, "plan_ids": [item["item_id"]], "kind": "分析"}, path + "/judgement")
@@ -315,7 +336,8 @@ def validate_draft(raw, facts, catalog, types):
                 errors.append(path + ":差异类别无效")
             unit(finding.get("title"), path + "/title")
             unit(finding.get("requirement"), path + "/requirement", "plan")
-            unit(finding.get("progress"), path + "/progress", "actual")
+            value = finding.get("progress")
+            unit(value, path + "/progress", "statement" if isinstance(value, dict) and value.get("kind") == "材料表述" else "actual")
             unit(finding.get("difference"), path + "/difference", "difference")
         paragraphs(report.get("pi_questions"), "review/pi_questions", minimum=0, maximum=40)
         paragraphs(report.get("manager_notes"), "review/manager_notes", minimum=0, maximum=8)
@@ -438,7 +460,8 @@ def render(kind, draft, facts, catalog, title, paths, claims):
                 lines += ["#### " + str(index) + ". " + finding["title"]["text"], ""]
                 if finding.get("scope_note"):
                     lines += ["**计划范围：** " + finding["scope_note"], ""]
-                for field, label in (("requirement", "任务书要求"), ("progress", "报告完成情况"), ("difference", "出入情况")):
+                progress_label = "报告所述" if finding["progress"].get("kind") == "材料表述" else "报告完成情况"
+                for field, label in (("requirement", "任务书要求"), ("progress", progress_label), ("difference", "出入情况")):
                     lines += ["**" + label + "：** " + finding[field]["text"], ""]
         lines += ["### 综合审查意见", ""]
         paras(report["conclusion"])

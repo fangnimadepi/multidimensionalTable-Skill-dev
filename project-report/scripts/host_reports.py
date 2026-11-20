@@ -15,7 +15,7 @@ from host_content import validate_facts, merge_facts, validate_draft, validate_c
 from host_prompts import task, policy, PACKAGE
 from host_protocol import HostTaskPending, HostReportFailure
 from review_common import atomic_write_json
-from host_tasks import compact_facts, compact_claims, skeleton, reading_task, submit_command
+from host_tasks import compact_facts, compact_claims, skeleton, reading_task, submit_command, repair_details
 
 VERSION = "host-report-v2"
 
@@ -40,9 +40,9 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def fail(folder, state, stage, errors):
+def fail(folder, state, stage, errors, details=None):
     feedback = folder / "failed.json"
-    atomic_write_json(feedback, {"stage": stage, "errors": errors})
+    atomic_write_json(feedback, {"stage": stage, "errors": errors, "items": details or []})
     state.update(status="failed", failed_stage=stage)
     save_state(folder / "state.json", state)
     raise HostReportFailure(folder, stage, feedback)
@@ -276,6 +276,7 @@ def advance(args, root, run_dir, config):
                                    source_context=[compact_source(s) for s in material["sources"] if s["source_id"] in selected])
             if state.get("feedback"):
                 payload["revision_feedback"] = state["feedback"]
+                payload["revision_feedback_details"] = state.get("feedback_details", [])
             if state.get("previous_result") is not None:
                 payload["previous_result"] = state["previous_result"]
             if not state.get("pending"):
@@ -296,8 +297,9 @@ def advance(args, root, run_dir, config):
                 else:
                     errors = validate_check(raw, chunk, len(types) == 2)
             if errors:
+                details = repair_details(errors, raw, facts if stage != "facts" else None)
                 feedback = folder / ("feedback-" + pending["request_id"][:16] + ".json")
-                atomic_write_json(feedback, {"stage": stage, "errors": errors, "response": raw})
+                atomic_write_json(feedback, {"stage": stage, "errors": errors, "items": details, "response": raw})
                 rows = raw.get("checks") if isinstance(raw, dict) else None
                 negative = stage == "check" and isinstance(raw, dict) and (
                     any(isinstance(r, dict) and r.get("supported") is False for r in (rows if isinstance(rows, list) else []))
@@ -305,17 +307,17 @@ def advance(args, root, run_dir, config):
                     or bool(raw.get("issues")))
                 if negative:
                     if state["draft_attempt"] >= 1:
-                        fail(folder, state, stage, errors)
+                        fail(folder, state, stage, errors, details)
                     state.update(stage="draft", part=0, attempt=1, draft_attempt=1,
                                  previous_result=state["draft"], rejected_draft_digest=digest(state["draft"]), audits=[])
                 elif state["attempt"] >= 1:
-                    fail(folder, state, stage, errors)
+                    fail(folder, state, stage, errors, details)
                 else:
                     state["attempt"] += 1
                     if stage == "draft":
                         state["draft_attempt"] = state["attempt"]
                     state["previous_result"] = raw
-                state.update(pending=None, feedback=errors)
+                state.update(pending=None, feedback=errors, feedback_details=details)
                 save_state(file, state)
                 continue
             accepted = folder / ("accepted-" + pending["request_id"][:16] + ".json")
@@ -323,6 +325,7 @@ def advance(args, root, run_dir, config):
             state["accepted"].append({"file": str(accepted), "sha256": file_hash(accepted), "stage": stage})
             state.update(pending=None, attempt=0)
             state.pop("feedback", None)
+            state.pop("feedback_details", None)
             state.pop("previous_result", None)
             if stage == "facts":
                 state["facts"].append(checked)
