@@ -102,7 +102,7 @@ class NativeFeishuTests(unittest.TestCase):
                 if result["status"] != "needs_model":
                     break
                 task = result["model_task"]
-                self.assertEqual(result["resume_arguments"][-1], task["response_file"])
+                self.assertIn("next_command", result)
                 request = json.loads(Path(task["request_file"]).read_text())
                 Path(task["response_file"]).write_text(json.dumps(reply(request), ensure_ascii=False))
                 args.response = Path(task["response_file"])
@@ -160,7 +160,10 @@ class NativeFeishuTests(unittest.TestCase):
             request = json.loads(Path(pending["request_file"]).read_text())
             answer = reply(request)
             if request["project_name"] == "完整项目":
-                answer["result"]["plan_items"][0]["citations"][0]["quote"] = "不在原文中的错误摘录"
+                if request["stage"] == "compose":
+                    answer["result"]["plans"][0]["sources"] = ["A9999"]
+                elif request["stage"] == "repair":
+                    answer["patches"] = [{"path":"/plans/0/sources","value":["A9999"]}]
             Path(pending["response_file"]).write_text(json.dumps(answer, ensure_ascii=False))
             args.response = Path(pending["response_file"])
         else:

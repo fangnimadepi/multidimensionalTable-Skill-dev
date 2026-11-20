@@ -16,6 +16,7 @@ sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "runtime/scripts")]
 import host_reports as host
 from host_protocol import HostTaskPending, HostReportFailure
 from host_content import validate_draft, validate_facts
+from host_compose import validate as validate_compose
 from host_materials import batches
 from host_fixtures import documents, reply, draft_reply, ACTUAL
 import local_reports
@@ -63,7 +64,7 @@ class HostWorkflowTests(unittest.TestCase):
 
     def test_two_editable_reports_complete_without_any_model_configuration(self):
         receipt, stages = self.complete()
-        self.assertEqual(stages, ["facts", "draft", "check", "checked"])
+        self.assertEqual(stages, ["compose", "check", "checked"])
         self.assertEqual(set(receipt["documents"]), {"review", "achievement"})
         self.assertEqual(receipt["execution_mode"], "host")
         self.assertEqual(receipt["direct_api_calls"], 0)
@@ -89,67 +90,61 @@ class HostWorkflowTests(unittest.TestCase):
         self.assertNotIn(ACTUAL, text)
         self.assertNotIn("审查阶段与基准", text)
 
-    def test_bad_literal_citations_have_one_repair_then_stop_without_exporting(self):
-        stage, request = self.next()
+    def material(self):
+        return json.loads(next((self.run / "_host").glob("*/materials.json")).read_text())
+
+    def patch_response(self, request, patches):
+        self.args.response.write_text(json.dumps({"request_id": request["request_id"], "patches": patches}, ensure_ascii=False))
+
+    def test_bad_literal_citations_need_field_repair_before_export(self):
+        _, request = self.next()
         result = reply(request)["result"]
-        result["plan_items"][0]["citations"][0]["quote"] = "原文中不存在的内容"
+        result["plans"][0]["sources"] = ["A9999"]
         self.respond(request, result)
         _, repair = self.next()
-        self.assertEqual(repair["stage"], "facts")
+        self.assertEqual(repair["stage"], "repair")
         self.assertIn("revision_feedback", repair)
-        self.respond(repair, result)
-        with self.assertRaises(HostReportFailure) as stopped:
-            self.next()
-        self.assertFalse(stopped.exception.details()["retryable"])
-        self.assertFalse((self.run / "reports").exists())
-        with self.assertRaises(HostReportFailure):
-            self.next()
+        self.assertEqual(repair["allowed_roots"], ["/plans"])
+        self.assertNotIn("review", repair)
+        self.respond(repair)
+        _, check = self.next()
+        self.respond(check)
+        self.assertEqual(self.next()[0], "checked")
 
     def test_missing_review_is_not_accepted_as_successful_paired_delivery(self):
         _, request = self.next()
-        self.respond(request)
-        _, request = self.next()
-        result = draft_reply(request)
+        result = reply(request)["result"]
         result.pop("review")
         self.respond(request, result)
         _, repair = self.next()
-        self.assertEqual(repair["stage"], "draft")
+        self.assertEqual(repair["stage"], "repair")
         self.assertIn("全部报告类型", str(repair["revision_feedback"]))
         self.respond(repair)
         _, check = self.next()
         self.respond(check)
         self.assertEqual(set(self.next()[1]["documents"]), {"review", "achievement"})
 
-    def test_explicit_negative_review_requires_changed_draft_not_a_positive_recheck(self):
-        _, facts = self.next()
-        self.respond(facts)
-        _, draft = self.next()
-        original = reply(draft)["result"]
-        self.respond(draft, original)
+    def negative_check(self):
+        _, compose = self.next()
+        self.respond(compose)
         _, check = self.next()
         negative = reply(check)["result"]
-        negative["checks"][0].update(supported=False, reason="此句应保留验证范围")
+        negative["issues"] = [{"path": "review/conclusion/0", "reason": "此句应保留验证范围"}]
         self.respond(check, negative)
-        _, repair = self.next()
-        self.assertEqual(repair["stage"], "draft")
-        self.respond(repair, original)
+        return compose, self.next()[1]
+
+    def test_explicit_negative_review_requires_changed_draft_not_a_positive_recheck(self):
+        compose, repair = self.negative_check()
+        self.assertEqual(repair["stage"], "repair")
+        self.patch_response(repair, [{"path": "/review/conclusion/0", "value": reply(compose)["result"]["review"]["conclusion"][0]}])
         with self.assertRaises(HostReportFailure):
             self.next()
         self.assertFalse((self.run / "reports").exists())
 
     def test_repaired_draft_can_pass_and_keeps_negative_feedback_for_diagnostics(self):
-        _, request = self.next()
-        self.respond(request)
-        _, request = self.next()
-        self.respond(request)
-        _, check = self.next()
-        negative = reply(check)["result"]
-        negative["checks"][0].update(supported=False, reason="需保留阶段范围")
-        self.respond(check, negative)
-        _, repair = self.next()
-        changed = reply(repair)["result"]
-        changed["review"]["conclusion"][0]["text"] += "后续仍需结合验证结果明确完成范围。"
-        self.respond(repair, changed)
+        compose, repair = self.negative_check()
+        original = reply(compose)["result"]["review"]["conclusion"][0]
+        self.patch_response(repair, [{"path": "/review/conclusion/0", "value": original + "后续仍需结合验证结果明确完成范围。"}])
         _, check = self.next()
         self.respond(check)
         receipt = self.next()[1]
@@ -158,30 +153,21 @@ class HostWorkflowTests(unittest.TestCase):
 
     def test_actual_numbers_cannot_borrow_the_planned_value(self):
         _, request = self.next()
-        self.respond(request)
-        _, draft = self.next()
-        result = reply(draft)["result"]
-        result["review"]["progress_summary"][0]["text"] = "已完成32B模型验证。"
-        claims, errors = validate_draft(result, draft["facts"], json.loads(next((self.run / "_host").glob("*/materials.json")).read_text()),
-                                       self.args.types)
-        self.assertTrue(any("数字或规格" in value for value in errors))
-        result["review"]["progress_summary"][0]["plan_ids"] = [draft["facts"]["plan_items"][0]["item_id"]]
-        _, errors = validate_draft(result, draft["facts"], json.loads(next((self.run / "_host").glob("*/materials.json")).read_text()),
-                                   self.args.types)
-        self.assertTrue(any("不能借用计划数字" in value for value in errors))
+        result = reply(request)["result"]
+        result["review"]["progress_summary"][0] = "已完成32B模型验证。"
+        errors = validate_compose(result, self.material(), self.args.types)
+        self.assertTrue(any("实际成果数字" in value for value in errors))
+        result["key_facts"][0]["text"] = "已完成32B模型验证。"
+        errors = validate_compose(result, self.material(), self.args.types)
+        self.assertTrue(any("关键数字或规格" in value for value in errors))
 
     def test_withheld_completion_is_allowed_but_positive_whole_project_claim_is_not(self):
         _, request = self.next()
-        self.respond(request)
-        _, draft = self.next()
-        result = reply(draft)["result"]
-        material = json.loads(next((self.run / "_host").glob("*/materials.json")).read_text())
-        result["review"]["conclusion"][0]["text"] = "不能据此认定本期节点全部完成。"
-        _, errors = validate_draft(result, draft["facts"], material, self.args.types)
-        self.assertFalse(errors)
-        result["review"]["conclusion"][0]["text"] = "所有中期目标已经完成。"
-        _, errors = validate_draft(result, draft["facts"], material, self.args.types)
-        self.assertTrue(any("整体履约认定" in error for error in errors))
+        result = reply(request)["result"]
+        result["review"]["conclusion"][0] = "不能据此认定本期节点全部完成。"
+        self.assertFalse(validate_compose(result, self.material(), self.args.types))
+        result["review"]["conclusion"][0] = "所有中期目标已经完成。"
+        self.assertTrue(any("整体履约认定" in error for error in validate_compose(result, self.material(), self.args.types)))
 
     def test_pending_request_and_input_tampering_are_rejected(self):
         _, request = self.next()
@@ -232,10 +218,8 @@ class HostWorkflowTests(unittest.TestCase):
         _, request = self.next()
         self.respond(request)
         _, request = self.next()
-        self.respond(request)
-        _, request = self.next()
         answer = reply(request)["result"]
-        answer.update(readable_and_complete=False, editorial_notes=["可进一步减少重复介绍。"])
+        answer.update(editorial_notes=["可进一步减少重复介绍。"])
         self.respond(request, answer)
         self.assertEqual(self.next()[0], "checked")
 
@@ -272,7 +256,7 @@ class HostWorkflowTests(unittest.TestCase):
             self.assertEqual(local_reports.main(), 0)
         result = json.loads(output.getvalue())
         self.assertEqual(result["status"], "needs_model")
-        self.assertIn("--response", result["resume_arguments"])
+        self.assertIn("--request", result["next_command"])
 
 
 if __name__ == "__main__":

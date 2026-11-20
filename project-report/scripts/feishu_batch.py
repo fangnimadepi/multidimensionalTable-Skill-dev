@@ -147,7 +147,7 @@ def summarize(plan, path):
             "requested_types": plan["requested_types"], "preflight_seconds": plan.get("preflight_seconds"),
             "projects": [{"record_id": entry["record_id"], "name": entry["project_name"],
                           "status": entry["status"], "types": entry["types"], "reason": entry["reason"],
-                          **{key: entry[key] for key in ("choices", "receipt", "diagnostics", "timing", "archive", "failure", "model_task")
+                          **{key: entry[key] for key in ("choices", "receipt", "diagnostics", "timing", "archive", "failure")
                              if entry.get(key)}} for entry in plan["records"]]}
 
 
@@ -445,9 +445,14 @@ def run(connector, config_file, config, root, args):
                         timing = entry.setdefault("timing", {})
                         started = time.monotonic()
                         progress(project=entry["project_name"], step="核对并下载项目材料")
-                        current_record(connector, plan, entry)
+                        # Intermediate host handoffs operate on the downloaded,
+                        # hashed snapshot. Recheck Feishu before archive, rather
+                        # than making a remote call for every model response.
+                        local_handoff = mode == "host" and bool(supplied)
+                        if not local_handoff:
+                            current_record(connector, plan, entry)
                         materials = fetch_materials(connector, config, plan, entry, run_dir, stage, checkpoint)
-                        timing["download_seconds"] = round(time.monotonic() - started, 2)
+                        timing["download_seconds"] = round(timing.get("download_seconds", 0) + time.monotonic() - started, 2)
                         phase = "generate"
                         receipt = recover_receipt(run_dir, entry, materials)
                         if receipt is None:
@@ -483,6 +488,7 @@ def run(connector, config_file, config, root, args):
                         if plan["archive_requested"]:
                             phase = "archive"
                             started = time.monotonic()
+                            # archive() rechecks the record before its first write.
                             progress(project=entry["project_name"], step="归档并回读报告")
                             entry["archive"] = archive(connector, plan, entry, receipt, run_dir, stage, path.parent.name)
                             timing["archive_seconds"] = round(time.monotonic() - started, 2)

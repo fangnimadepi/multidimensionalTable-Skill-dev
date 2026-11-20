@@ -16,7 +16,7 @@ $Entry = Join-Path $Skill 'scripts\feishu_batch.py'
 & $Py $Entry --config $Config deliver --target '飞书表格链接或确切名称' --project '确切项目名'
 ```
 
-默认入口返回 needs_model 时，只读 model_task.task_file 和 response_template，用当前模型填写 response_file，然后执行 next_command。该命令已包含正确的解释器、批次和校验提交入口，不需要查看源码或拼接命令；continue_batch 同样执行 next_command。不要把等待宿主阶段当作失败，不要只生成本地稿就结束。完整协议见 [宿主执行](host-workflow.md)。内置模型和自定义模型使用相同方法，均不提取会话密钥。
+默认入口返回 needs_model 时，只读 model_task.task_file（已含字段示例及需要读取的材料分段），用当前模型填写 response_file，然后执行 next_command。该命令已包含正确的解释器、批次和校验提交入口，不需要查看源码或拼接命令；continue_batch 同样执行 next_command。不要把等待宿主阶段当作失败，不要只生成本地稿就结束。完整协议见 [宿主执行](host-workflow.md)。内置模型和自定义模型使用相同方法，均不提取会话密钥。
 
 完整项目名中的连续空格按排版差异处理，规范空格后仅有一个匹配才采用；存在歧义时仍返回候选，不猜测或改写原记录。Windows 的 `&` 命令使用 PowerShell 工具执行，不混用 Bash 语法或逐字拼接中文字符。
 

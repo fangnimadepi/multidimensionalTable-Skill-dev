@@ -55,6 +55,21 @@ class WordOutputTests(unittest.TestCase):
                 self.assertTrue(xml.xpath('//w:p[w:pPr/w:pStyle[@w:val="Title"]]/w:r/w:rPr/w:color[@w:val="000000"]', namespaces=ns))
                 self.assertFalse(xml.xpath('//w:pPr/w:pBdr', namespaces=ns))
 
+    def test_api_copy_uses_grouped_theme_bullets_instead_of_per_finding_tables(self):
+        from reading_copy import review_appendix, compact_locations
+        source = {"ref": "r1", "quote": "当前进展", "side": "report", "location": "R-PDF-P5"}
+        statement = {"citations": [{"ref": "r1", "quote": "当前进展"}]}
+        category = "交付内容与技术规格差异"
+        report = {"source_index": [source], "overall_assessment": {"statements": [{"section": "conclusion", **statement}]},
+                  "presentation": {"categorized_findings": {"items": [
+                      {"category": category, "title": title, **{k: statement for k in ("plan_requirement", "reported_progress", "difference")}}
+                      for title in ("一个问题", "另一个问题")]}}}
+        text = review_appendix(report)
+        self.assertEqual(text.count(category), 1)
+        self.assertIn("原PDF第5页", text)
+        self.assertNotIn("|", text)
+        self.assertEqual(compact_locations([{"side": "plan", "location": f"P-P{n}"} for n in (4, 5, 6, 9)]), "任务书：正文第4—6、9段")
+
     def test_visual_emphasis_preserves_complete_qualifications(self):
         from reading_copy import emphasize_lead, emphasize_review_summary
 

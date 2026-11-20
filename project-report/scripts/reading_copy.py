@@ -45,19 +45,35 @@ def compact_locations(records):
     for record in records:
         side = "任务书" if record["side"] == "plan" else "总结报告"
         location = record["location"]
+        group = grouped.setdefault(side, {"segments": {}, "other": []})
         paragraph = re.fullmatch(r'(?:[PR]-)?P(\d+)', location)
         row = re.fullmatch(r'(?:[PR]-)?T(\d+)-R(\d+)', location)
         page = re.fullmatch(r'(?:[PR]-)?PDF-P(\d+)', location)
         if paragraph:
-            location = f"正文第{paragraph[1]}段"
+            key, number = ("正文第", "段"), int(paragraph[1])
         elif row:
-            location = f"第{row[1]}表第{row[2]}行"
+            key, number = ("第" + row[1] + "表第", "行"), int(row[2])
         elif page:
-            location = f"原PDF第{page[1]}页"
-        grouped.setdefault(side, [])
-        if location not in grouped[side]:
-            grouped[side].append(location)
-    return "<br>".join(side + "：" + "；".join(locations) for side, locations in grouped.items())
+            key, number = ("原PDF第", "页"), int(page[1])
+        else:
+            if location not in group["other"]:
+                group["other"].append(location)
+            continue
+        group["segments"].setdefault(key, set()).add(number)
+    output = []
+    for side, group in grouped.items():
+        locations = []
+        for (prefix, suffix), numbers in group["segments"].items():
+            spans = []
+            for number in sorted(numbers):
+                if spans and number == spans[-1][-1] + 1:
+                    spans[-1].append(number)
+                else:
+                    spans.append([number])
+            locations.append(prefix + "、".join(str(s[0]) if len(s) == 1 else str(s[0]) + "—" + str(s[-1]) for s in spans) + suffix)
+        locations += group["other"]
+        output.append(side + "：" + "；".join(locations[:4]) + ("等相关位置" if len(locations) > 4 else ""))
+    return "<br>".join(output)
 
 
 def review_appendix(report):
@@ -73,22 +89,21 @@ def review_appendix(report):
                 selected.append(source)
         return compact_locations(selected)
 
-    lines = ["## 附页 关键依据", ""]
+    lines = ["## 材料来源与重点定位", ""]
     conclusions = [item for item in report["overall_assessment"]["statements"] if item["section"] == "conclusion"]
-    rows = [("综合审查意见", locations(conclusions))]
+    rows = {"综合意见与主要成果": locations(conclusions)}
     groups = report.get("presentation", {}).get("categorized_findings", {}).get("items", [])
     import project_report_findings as findings
 
-    groups = sorted(groups, key=lambda topic: findings.CATEGORIES.index(topic["category"]))
-    for index, topic in enumerate(groups, 1):
-        fields = [topic[key] for key in ("plan_requirement", "reported_progress", "difference")]
-        rows.append((topic["title"], locations(fields)))
-    for index, question in enumerate(report.get("presentation", {}).get("pi_confirmation", {}).get("items", []), 1):
-        rows.append(("确认事项 " + str(index) + " · " + question["title"].split("：", 1)[0], locations([question])))
-    lines += ["| 对应内容 | 原材料位置 |", "| --- | --- |"]
-    from project_report_contract import cell
-
-    lines += ["| " + cell(label) + " | " + position + " |" for label, position in rows if position]
+    grouped = {}
+    for topic in sorted(groups, key=lambda topic: findings.CATEGORIES.index(topic["category"])):
+        grouped.setdefault(topic["category"], []).extend(topic[key] for key in ("plan_requirement", "reported_progress", "difference"))
+    for category, fields in grouped.items():
+        rows[category] = locations(fields)
+    questions = report.get("presentation", {}).get("pi_confirmation", {}).get("items", [])
+    if questions:
+        rows["确认事项的材料位置"] = locations(questions)
+    lines += ["- **" + label + "：** " + position.replace("<br>", "；") for label, position in rows.items() if position]
     return "\n".join(lines) + "\n"
 
 
@@ -124,7 +139,7 @@ def achievement_copy(report, markdown):
     card = {key: value["text"] for key, value in draft["card"].items()}
     card.update(title=draft["value_title"], project_name=report["source"]["project_name"], heading="四 横版展示卡片", forecast=False)
     lines += card_markdown(card)
-    appendix = ["## 附页 关键依据与说明", ""]
+    appendix = ["## 材料来源与重点定位", ""]
     if draft.get("questions"):
         for question in draft["questions"]:
             appendix += [question["text"], ""]
@@ -135,8 +150,7 @@ def achievement_copy(report, markdown):
     for fact in report["facts"]:
         if fact["fact_id"] in used:
             categories.setdefault(fact["category"], []).extend(report["source"]["records"][cite["ref"]] for cite in fact["citations"])
-    appendix += ["| 核对内容 | 原材料位置 |", "| --- | --- |"]
-    appendix += ["| " + cell(category) + " | " + compact_locations(records) + " |" for category, records in categories.items()]
+    appendix += ["- **" + category + "：** " + compact_locations(records).replace("<br>", "；") for category, records in categories.items()]
     return "\n".join(lines), "\n".join(appendix) + "\n", card
 
 
@@ -171,8 +185,9 @@ def forecast_copy(markdown):
             "value": html.unescape(re.sub(r'^\*\*[^\n]+\*\*\s*', '', brief)),
             "stage": "任务书版 预期成果", "next": "结合后续阶段总结、测试或演示材料核对实际交付与关键指标。", "forecast": True}
     body += "\n" + "\n".join(card_markdown(card))
-    result = ["## 附页 任务书关键依据", "", "| 章节 | 原材料位置 |", "| --- | --- |"]
+    result = ["## 材料来源与重点定位", ""]
     used = set()
+    themes = {}
     for section in re.split(r'(?=<a id="forecast-source-)', appendix):
         match = re.search(r'<a id="([^"]+)"', section)
         if not match:
@@ -183,8 +198,9 @@ def forecast_copy(markdown):
             raise ValueError("任务书版依据缺少章节或位置。")
         key = (heading[1], location[1])
         if key not in used:
-            result += ["| " + heading[1] + " | " + location[1] + " |"]
+            themes.setdefault(heading[1], []).append(location[1])
             used.add(key)
+    result += ["- **" + heading + "：** " + "；".join(positions) for heading, positions in themes.items()]
     return body, "\n".join(result) + "\n", card
 
 

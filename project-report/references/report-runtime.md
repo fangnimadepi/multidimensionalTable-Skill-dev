@@ -41,7 +41,7 @@ Windows 使用 `& .\scripts\run.ps1` 及相同参数。需要独立 API 时，�
 
 ## 回执与恢复
 
-默认命令可能先返回 `status: needs_model`，由宿主按 [固定阶段协议](host-workflow.md) 读取任务、写响应并续跑；这不等于报告已完成。检查及导出完成后才返回 `status: checked`、原材料摘要、检查结果和 `documents`。每个文档项使用 `docx` 字段给出实际文件路径，另有 SHA-256、字节大小和卡片状态；为兼容已有回执保留的 `internal_links`、`bookmarks` 均为 0。`checked.json`、可编辑 Markdown 及 DOCX 保存在项目 `reports/` 下。正式归档上传回执对应的 DOCX。内部完整正文、原文上下文和审核记录保留在 `diagnostics` 指向的本地底稿，精简附页不改变核对标准。
+默认命令可能先返回 `status: needs_model`，由宿主按 [固定阶段协议](host-workflow.md) 读取任务、写响应并续跑；这不等于报告已完成。检查及导出完成后才返回 `status: checked`、原材料摘要、检查结果和 `documents`。每个文档项使用 `docx` 字段给出实际文件路径，另有 SHA-256、字节大小和卡片状态；为兼容已有回执保留的 `internal_links`、`bookmarks` 均为 0。`checked.json`、可编辑 Markdown 及 DOCX 保存在项目 `reports/` 下。正式归档上传回执对应的 DOCX。内部完整正文、原文上下文、关键来源绑定和核对记录保留在 `diagnostics` 指向的本地底稿，附页按主题精简，重点核对仍保留。
 
 重试复用相同项目目录、材料和模型设置，已完成步骤按摘要核验后续跑。不同版本的核心分别保存，避免把旧版本审批结果冒充本轮检查。
 

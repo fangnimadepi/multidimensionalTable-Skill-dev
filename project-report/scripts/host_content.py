@@ -408,6 +408,60 @@ def validate_check(raw, claims, paired):
     return errors
 
 
+def brief_locations(items):
+    """Group page ranges/sections instead of printing every paragraph location."""
+    sides = []
+    for side, label in (("plan", "任务书"), ("report", "总结报告")):
+        selected = [s for s in items if s["side"] == side]
+        if not selected:
+            continue
+        pages, sections = set(), []
+        for source in selected:
+            location = source["location"]
+            page = re.search(r"原 PDF 第(\d+)页", location)
+            if page:
+                pages.add(int(page.group(1)))
+            else:
+                heading = source.get("heading")
+                if heading == "项目目标与计划条件":
+                    heading = "目标、考核指标与里程碑安排"
+                value = heading or location
+                if value not in sections:
+                    sections.append(value)
+        spans = []
+        for page in sorted(pages):
+            if spans and page == spans[-1][-1] + 1:
+                spans[-1].append(page)
+            else:
+                spans.append([page])
+        if spans:
+            sections.insert(0, "第" + "、".join(str(p[0]) if len(p) == 1 else f"{p[0]}—{p[-1]}" for p in spans) + "页")
+        sides.append(label + "：" + "、".join(sections[:4]) + ("等相关章节" if len(sections) > 4 else ""))
+    return "；".join(sides)
+
+
+def brief_appendix(kind, report, claims):
+    groups = {}
+    for claim in claims:
+        path = claim["path"]
+        if not path.startswith(kind + "/"):
+            continue
+        if "/findings/" in path:
+            number = int(path.split("/")[2])
+            finding = report.get("findings", [])[number]
+            label = finding["category"] + "的核对位置"
+        elif "/plan_summary" in path:
+            label = "任务书目标与计划"
+        elif "/progress_summary" in path or "/fact_sheet/" in path:
+            label = "预期成果与用途" if kind == "forecast" else "代表成果与关键指标"
+        elif "/next_steps/" in path:
+            label = "后续安排"
+        else:
+            continue
+        groups.setdefault(label, []).extend(claim["sources"])
+    return ["- **" + label + "：** " + brief_locations(items) for label, items in groups.items() if items]
+
+
 def render(kind, draft, facts, catalog, title, paths, claims):
     from feishu_report_bundle import REPORT_TITLES
     lines = ["# " + REPORT_TITLES[kind], "", "**项目：" + title + "**", "",
@@ -494,16 +548,7 @@ def render(kind, draft, facts, catalog, title, paths, claims):
         card.update(title=report["value_title"]["text"], project_name=title, forecast=kind == "forecast",
                     heading="三 横版展示卡片" if kind == "forecast" else "四 横版展示卡片")
         lines += card_markdown(card)
-    lines += ["## 附页 关键依据" if kind != "forecast" else "## 附页 任务书关键依据", "",
-              "| 对应内容 | 原材料位置 |", "| --- | --- |"]
-    seen = set()
-    for claim in claims:
-        if not claim["path"].startswith(kind + "/"):
-            continue
-        places = list(dict.fromkeys(("任务书" if source["side"] == "plan" else "总结报告") + "：" + source["location"] for source in claim["sources"]))
-        key = tuple(places)
-        if key and key not in seen:
-            seen.add(key)
-            lines += ["| " + cell(claim["text"][:90] + ("…" if len(claim["text"]) > 90 else "")) + " | " + "；".join(places) + " |"]
+    lines += ["## 材料来源与重点定位", ""]
+    lines += brief_appendix(kind, report, claims)
     markdown = "\n".join(lines).strip() + "\n"
     return (emphasize_review_summary(markdown) if kind == "review" else markdown), card

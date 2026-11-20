@@ -25,7 +25,7 @@ def build():
     with ZipFile(temporary) as package:
         required = {"project-report/SKILL.md", "project-report/requirements.lock", "project-report/requirements-ocr.lock",
                     "project-report/scripts/workbuddy_models.py", "project-report/scripts/run.sh",
-                    "project-report/scripts/host_reports.py", "project-report/scripts/host_content.py",
+                    "project-report/scripts/host_compose.py", "project-report/scripts/host_reports.py", "project-report/scripts/host_content.py",
                     "project-report/scripts/host_materials.py", "project-report/scripts/host_prompts.py",
                     "project-report/scripts/host_protocol.py", "project-report/references/host-workflow.md",
                     "project-report/scripts/host_task.py", "project-report/scripts/host_tasks.py",

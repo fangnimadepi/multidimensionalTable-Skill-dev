@@ -18,7 +18,7 @@ from host_protocol import HostTaskPending, HostReportFailure
 from host_content import validate_facts, validate_draft, normalize_draft, render
 from host_materials import catalog, compact_source, batches
 from host_tasks import command, repair_details
-from host_fixtures import documents, reply
+from host_fixtures import documents, reply, fact_reply, draft_reply
 from test_host_feishu import NativeConnector, options
 import feishu_batch
 
@@ -71,10 +71,10 @@ class HandoffTests(unittest.TestCase):
                 task = result["model_task"]
             else:
                 self.fail("New submit workflow did not terminate")
-        self.assertEqual(stages, ["facts", "draft", "check"])
+        self.assertEqual(stages, ["compose", "check"])
         self.assertEqual(set(result["documents"]), {"review", "achievement"})
         state = json.loads((Path(result["diagnostics"]) / "state.json").read_text())
-        self.assertTrue(state["facts"][0]["plan_items"][0]["citations"][0]["quote"])
+        self.assertTrue(state["joint"]["plans"][0]["sources"][0].startswith("A"))
 
     def test_submit_command_runs_in_a_fresh_python_process_without_pythonpath(self):
         task = self.pending()
@@ -85,39 +85,23 @@ class HandoffTests(unittest.TestCase):
                                  "submit", "--request", task["request_file"]], cwd=self.root,
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(json.loads(result.stdout)["model_task"]["stage"], "draft")
+        self.assertEqual(json.loads(result.stdout)["model_task"]["stage"], "check")
 
-    def test_task_includes_real_skeleton_exact_command_and_no_default_approved_checks(self):
+    def test_task_has_one_readable_schema_and_exact_submit_command(self):
         task = self.pending()
         request = json.loads(Path(task["request_file"]).read_text())
-        template = json.loads(Path(task["response_template"]).read_text())
-        self.assertEqual(template["request_id"], request["request_id"])
-        self.assertEqual(template["result"]["plan_items"], [])
-        self.assertEqual(template["result"]["coverage"][0]["disposition"], "")
+        text = Path(task["task_file"]).read_text()
+        example = json.loads(text.split("## 响应字段示例",1)[1].split("```json",1)[1].split("```",1)[0])
+        self.assertIn("plans", example["result"])
+        self.assertIn("key_facts", example["result"])
         self.assertIn(str(Path(sys.executable)), task["submit_command"])
         self.assertIn("host_task.py", task["submit_command"])
-        text = Path(task["task_file"]).read_text()
-        self.assertIn("submit", text)
-        self.assertIn(request["sources"][0]["source_id"], text)
-        self.assertNotIn("next_command", request["instructions"])
-
-    def test_readable_task_includes_fact_schema_and_untruncated_draft_identifiers(self):
-        task = self.pending()
-        text = Path(task["task_file"]).read_text()
-        schema = text.split("## 响应字段示例", 1)[1].split("```json", 1)[1].split("```", 1)[0]
-        example = json.loads(schema)
-        self.assertIn("requirement", example["result"]["plan_items"][0])
-        self.assertIn("kind", example["result"]["facts"][0])
+        self.assertIn(request["source_context"][0]["id"], text)
         self.answer(task)
         result = host_task.submit(task["request_file"], self.config_file, self.config)
-        draft_task = Path(result["model_task"]["task_file"]).read_text()
-        request = json.loads(Path(result["model_task"]["request_file"]).read_text())
-        # Reproduce a host reader that caps each line, rather than merely
-        # checking that the program wrote the identifiers somewhere on disk.
-        visible = "\n".join(line[:2000] for line in draft_task.splitlines())
-        for fact in request["facts"]["facts"]:
-            self.assertIn(fact["fact_id"], visible)
-            self.assertIn(fact["text"], visible)
+        check_task = Path(result["model_task"]["task_file"]).read_text()
+        self.assertNotIn('"supported": true',check_task)
+        self.assertIn('"reviewed": []',check_task)
 
     def test_missing_response_and_repeated_polling_stop_instead_of_an_endless_wait(self):
         task = self.pending()
@@ -133,7 +117,7 @@ class HandoffTests(unittest.TestCase):
         task = self.pending()
         self.answer(task)
         next_task = host_task.submit(task["request_file"], self.config_file, self.config)
-        self.assertEqual(next_task["model_task"]["stage"], "draft")
+        self.assertEqual(next_task["model_task"]["stage"], "check")
         with self.assertRaisesRegex(ValueError, "已经提交"):
             host_task.submit(task["request_file"], self.config_file, self.config)
 
@@ -149,20 +133,15 @@ class HandoffTests(unittest.TestCase):
             host_task.submit(task["request_file"], wrong_config, self.config)
 
     def test_comparison_units_normalize_without_discarding_conflicting_sources(self):
-        task = self.pending()
-        self.answer(task)
-        result = host_task.submit(task["request_file"], self.config_file, self.config)
-        request = json.loads(Path(result["model_task"]["request_file"]).read_text())
-        draft = reply(request)["result"]
+        request, material, draft = self.draft_context()
         row = draft["review"]["comparisons"][0]
         for field in ("progress", "judgement"):
-            row[field] = {"text": row[field], "kind": "事实" if field == "progress" else "分析",
-                          "plan_ids": [] if field == "progress" else [row["item_id"]], "fact_ids": row["fact_ids"]}
+            row[field] = {"text":row[field],"kind":"事实" if field=="progress" else "分析",
+                          "plan_ids":[] if field=="progress" else [row["item_id"]],"fact_ids":row["fact_ids"]}
         normalized, errors = normalize_draft(draft)
         self.assertFalse(errors)
-        material = json.loads((Path(task["request_file"]).parent / "materials.json").read_text())
-        self.assertFalse(validate_draft(normalized, request["facts"], material, self.args.types)[1])
-        row["progress"]["plan_ids"] = [row["item_id"]]
+        self.assertFalse(validate_draft(normalized,request["facts"],material,self.args.types)[1])
+        row["progress"]["plan_ids"]=[row["item_id"]]
         self.assertTrue(normalize_draft(draft)[1])
 
     def test_source_id_quotes_are_restored_and_missing_101_is_named(self):
@@ -179,12 +158,12 @@ class HandoffTests(unittest.TestCase):
         self.assertTrue(any("未知来源编号 S-other" in e for e in validate_facts(raw, sources)[1]))
 
     def draft_context(self):
-        task = self.pending()
-        self.answer(task)
-        result = host_task.submit(task["request_file"], self.config_file, self.config)
-        request = json.loads(Path(result["model_task"]["request_file"]).read_text())
-        material = json.loads((Path(task["request_file"]).parent / "materials.json").read_text())
-        return request, material, reply(request)["result"]
+        task=self.pending()
+        material=json.loads((Path(task["request_file"]).parent/"materials.json").read_text())
+        facts,errors=validate_facts(fact_reply({"sources":material["sources"]}),material["sources"])
+        self.assertFalse(errors)
+        request={"facts":facts,"requested_types":self.args.types}
+        return request,material,draft_reply(request)
 
     def test_report_background_date_may_qualify_current_results_but_never_replace_them(self):
         request, material, draft = self.draft_context()
