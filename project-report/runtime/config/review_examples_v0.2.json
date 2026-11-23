@@ -1,0 +1,54 @@
+{
+  "version": "synthetic-calibration-v1",
+  "approval_status": "synthetic_rule_examples",
+  "examples": [
+    {
+      "case_id": "S01",
+      "project_id": "SYNTHETIC",
+      "tags": [
+        "数量",
+        "时间"
+      ],
+      "decision": "报告明确部分完成",
+      "plan": "本期完成同一清单中的300项复测。",
+      "report": "截至本期报告日，同一清单已完成123项复测。",
+      "reason": "同对象、同阶段、同统计口径，可提示完成数量与计划有差异。"
+    },
+    {
+      "case_id": "S02",
+      "project_id": "SYNTHETIC",
+      "tags": [
+        "模型规格",
+        "时间"
+      ],
+      "decision": "尚未到期",
+      "plan": "本期完成8B模型验证，终期完成32B模型验证。",
+      "report": "已完成8B模型验证，32B验证列入后续计划。",
+      "reason": "终期规格不能提前作为本期未完成依据。"
+    },
+    {
+      "case_id": "S03",
+      "project_id": "SYNTHETIC",
+      "tags": [
+        "测试范围",
+        "性能"
+      ],
+      "decision": "无法判断",
+      "plan": "在独立测试集上达到规定指标。",
+      "report": "部分样本达到更高指标，未明确同一独立测试集的整体结果。",
+      "reason": "测试对象及范围不明时确认口径，不将局部样本外推为整体达标或未达。"
+    },
+    {
+      "case_id": "S04",
+      "project_id": "SYNTHETIC",
+      "tags": [
+        "内部冲突",
+        "交付状态"
+      ],
+      "decision": "报告内部表述冲突",
+      "plan": "本期发布原型。",
+      "report": "目标表称已发布，正文称仍在内部测试，未说明是否为同一版本。",
+      "reason": "保留两侧状态并询问版本范围，不自行采用更强的完成状态。"
+    }
+  ]
+}
